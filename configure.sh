@@ -3,24 +3,23 @@
 # GNOME Theme & Dash-to-Dock Configuration Script
 # ------------------------------------------------------------
 # Applies GNOME Shell, GTK, icon, and cursor themes,
-# configures Dash-to-Dock settings, links GTK4 theme files,
-# and replaces the "Show Applications" icon with a Fedora icon.
+# configures Dash-to-Dock settings, and links GTK4 theme files.
 # ------------------------------------------------------------
 
 FLAG_FILE="/tmp/.gtk_theme_script_loaded_$USER"
 
 # Run only once per login session
 if [ -f "$FLAG_FILE" ]; then
-    return 0
+    exit 0
 fi
 touch "$FLAG_FILE"
 
 # === User-defined variables ===
-GTK_THEME="Orchis-Green-Dark-Compact"
-SHELL_THEME="Orchis-Green-Dark-Compact"
+GTK_THEME="Orchis-Orange-Dark-Compact"
+SHELL_THEME="Orchis-Orange-Dark-Compact"
+WM_THEME="Orchis-Orange-Dark-Compact"
 ICON_THEME="Papirus-Dark"
-CURSOR_THEME="Bibata-Modern-Ice"
-FEDORA_ICON="/usr/share/icons/hicolor/48x48/apps/fedora-logo-icon.png"  # Change path if needed
+CURSOR_THEME="VolantesCursors"
 
 # === Helper function: Check GNOME extension installation ===
 check_extension() {
@@ -53,7 +52,7 @@ gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com
 echo "⚙️  Applying Dash-to-Dock settings..."
 
 declare -A dash_settings=(
-    ["apply-custom-theme"]=true
+    ["apply-custom-theme"]=false
     ["autohide"]=true
     ["autohide-in-fullscreen"]=false
     ["background-opacity"]=0.8
@@ -72,7 +71,7 @@ declare -A dash_settings=(
     ["multi-monitor"]=true
     ["preferred-monitor"]=-2
     ["show-apps-always-in-the-edge"]=true
-    ["show-apps-at-top"]=true       # Menu-grid at the top/left
+    ["show-apps-at-top"]=true
     ["show-favorites"]=true
     ["show-trash"]=true
     ["show-running"]=true
@@ -113,6 +112,7 @@ fi
 echo "🎨 Applying GNOME theme settings..."
 gsettings set org.gnome.desktop.interface gtk-theme "$GTK_THEME"
 gsettings set org.gnome.shell.extensions.user-theme name "$SHELL_THEME"
+gsettings set org.gnome.desktop.wm.preferences theme "$WM_THEME"
 gsettings set org.gnome.desktop.interface icon-theme "$ICON_THEME"
 gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_THEME"
 
@@ -152,28 +152,7 @@ else
     echo "⚠ WARNING: gtk-dark.css not found in theme '$GTK_THEME'"
 fi
 
-# === Replace the "Show Applications" icon with Fedora icon ===
-echo "🪄 Replacing Show Applications icon with Fedora icon..."
-
-# Path to Papirus show-apps icon
-ICON_OVERRIDE_DIR="$HOME/.local/share/icons/$ICON_THEME/symbolic/actions"
-mkdir -p "$ICON_OVERRIDE_DIR"
-
-# Default GNOME icon name for the Show Applications button
-SHOW_APPS_ICON="view-app-grid-symbolic.svg"
-
-# Replace with Fedora icon if available
-if [ -f "$FEDORA_ICON" ]; then
-    echo "✔ Fedora icon found: $FEDORA_ICON"
-    rm -f "$ICON_OVERRIDE_DIR/$SHOW_APPS_ICON"
-    ln -sf "$FEDORA_ICON" "$ICON_OVERRIDE_DIR/$SHOW_APPS_ICON"
-    echo "✔ Overridden Show Applications icon with Fedora logo."
-else
-    echo "⚠ WARNING: Fedora icon not found at $FEDORA_ICON — skipping icon override."
-fi
-
 # === Done ===
 echo ""
 echo "✅ All GNOME settings and themes applied successfully!"
-echo "🟢 The menu-grid (Show Applications) icon has been replaced with the Fedora logo."
 echo "🔄 Restart GNOME Shell (Alt+F2 → r → Enter) if changes don’t appear."
