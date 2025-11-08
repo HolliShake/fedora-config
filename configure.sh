@@ -7,6 +7,12 @@
 # and replaces the "Show Applications" icon with a Fedora icon.
 # ------------------------------------------------------------
 
+# Prevent multiple executions in the same session
+if [ -n "$GTK_THEME_SCRIPT_LOADED" ]; then
+    return 0
+fi
+export GTK_THEME_SCRIPT_LOADED=1
+
 # === User-defined variables ===
 GTK_THEME="Orchis-Green-Dark-Compact"
 SHELL_THEME="Orchis-Green-Dark-Compact"
