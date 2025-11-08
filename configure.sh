@@ -7,11 +7,13 @@
 # and replaces the "Show Applications" icon with a Fedora icon.
 # ------------------------------------------------------------
 
-# Prevent multiple executions in the same session
-if [ -n "$GTK_THEME_SCRIPT_LOADED" ]; then
+FLAG_FILE="/tmp/.gtk_theme_script_loaded_$USER"
+
+# Run only once per login session
+if [ -f "$FLAG_FILE" ]; then
     return 0
 fi
-export GTK_THEME_SCRIPT_LOADED=1
+touch "$FLAG_FILE"
 
 # === User-defined variables ===
 GTK_THEME="Orchis-Green-Dark-Compact"
