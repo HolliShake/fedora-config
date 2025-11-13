@@ -3,23 +3,25 @@
 # GNOME Theme & Dash-to-Dock Configuration Script
 # ------------------------------------------------------------
 # Applies GNOME Shell, GTK, icon, and cursor themes,
-# configures Dash-to-Dock settings, and links GTK4 theme files.
+# configures Dash-to-Dock settings, sets wallpaper,
+# and links GTK4 theme files.
 # ------------------------------------------------------------
 
 FLAG_FILE="/tmp/.gtk_theme_script_loaded_$USER"
 
 # Run only once per login session
 if [ -f "$FLAG_FILE" ]; then
-    exit 0
+    exit 1
 fi
 touch "$FLAG_FILE"
 
 # === User-defined variables ===
-GTK_THEME="Orchis-Orange-Dark-Compact"
-SHELL_THEME="Orchis-Orange-Dark-Compact"
-WM_THEME="Orchis-Orange-Dark-Compact"
-ICON_THEME="Papirus-Dark"
+GTK_THEME="Orchis-Grey-Dark-Compact-Nord"
+SHELL_THEME="Orchis-Grey-Dark-Compact-Nord"
+WM_THEME="Orchis-Grey-Dark-Compact-Nord"
+ICON_THEME="Tela-circle-nord-dark"
 CURSOR_THEME="VolantesCursors"
+WALLPAPER_PATH="/usr/share/backgrounds/custom/a_woman_standing_in_front_of_a_window.jpg"  # 🖼️ Set your wallpaper path here
 
 # === Helper function: Check GNOME extension installation ===
 check_extension() {
@@ -113,8 +115,21 @@ echo "🎨 Applying GNOME theme settings..."
 gsettings set org.gnome.desktop.interface gtk-theme "$GTK_THEME"
 gsettings set org.gnome.shell.extensions.user-theme name "$SHELL_THEME"
 gsettings set org.gnome.desktop.wm.preferences theme "$WM_THEME"
+gsettings set org.gnome.desktop.wm.preferences button-layout "appmenu:minimize,maximize,close"
 gsettings set org.gnome.desktop.interface icon-theme "$ICON_THEME"
 gsettings set org.gnome.desktop.interface cursor-theme "$CURSOR_THEME"
+
+# === Set wallpaper ===
+echo "🖼️  Setting desktop background..."
+
+if [ -f "$WALLPAPER_PATH" ]; then
+    gsettings set org.gnome.desktop.background picture-uri "file://$WALLPAPER_PATH"
+    gsettings set org.gnome.desktop.background picture-uri-dark "file://$WALLPAPER_PATH"
+    gsettings set org.gnome.desktop.background picture-options "zoom"
+    echo "✔ Wallpaper set to: $WALLPAPER_PATH"
+else
+    echo "⚠ WARNING: Wallpaper not found at $WALLPAPER_PATH"
+fi
 
 # === GTK4 assets and CSS linking ===
 echo "🔗 Linking GTK4 theme files..."
@@ -152,7 +167,38 @@ else
     echo "⚠ WARNING: gtk-dark.css not found in theme '$GTK_THEME'"
 fi
 
+echo "🎨 Applying Firefox theme settings..."
+# Find all Firefox profile directories
+PROFILE_DIRS=$(find ~/.mozilla/firefox -maxdepth 1 -type d -name "*.default*" -o -name "default-*")
+
+for PROFILE_DIR in $PROFILE_DIRS; do
+    USER_JS="$PROFILE_DIR/user.js"
+    PREFS_JS="$PROFILE_DIR/prefs.js"
+
+    # Backup existing files
+    [ -f "$USER_JS" ] && cp "$USER_JS" "$USER_JS.bak"
+    [ -f "$PREFS_JS" ] && cp "$PREFS_JS" "$PREFS_JS.bak"
+
+    # --- Update user.js safely ---
+    # Remove old lines if exist
+    if [ -f "$USER_JS" ]; then
+        sed -i '/browser.tabs.inTitlebar/d' "$USER_JS"
+    fi
+    # Append new setting
+    echo 'user_pref("browser.tabs.inTitlebar", 0);' >> "$USER_JS"
+
+    # --- Update prefs.js (only if Firefox is closed!) ---
+    if [ -f "$PREFS_JS" ]; then
+        # Remove old lines
+        sed -i '/browser.tabs.inTitlebar/d' "$PREFS_JS"
+        # Append new setting
+        echo 'user_pref("browser.tabs.inTitlebar", 0);' >> "$PREFS_JS"
+    fi
+
+    echo "Updated browser.tabs.inTitlebar in profile: $PROFILE_DIR"
+done
+
 # === Done ===
 echo ""
-echo "✅ All GNOME settings and themes applied successfully!"
+echo "✅ All GNOME settings, themes, and wallpaper applied successfully!"
 echo "🔄 Restart GNOME Shell (Alt+F2 → r → Enter) if changes don’t appear."
