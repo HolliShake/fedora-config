@@ -7,11 +7,17 @@
 # and links GTK4 theme files.
 # ------------------------------------------------------------
 
+# Only run in GNOME graphical session
+if [ -z "$XDG_CURRENT_DESKTOP" ] || [[ "$XDG_CURRENT_DESKTOP" != *GNOME* ]]; then
+    exit 0   # Exit the script early
+fi
+
 FLAG_FILE="/tmp/.gtk_theme_script_loaded_$USER"
 
 # Run only once per login session
 if [ -f "$FLAG_FILE" ]; then
-    exit 1
+    echo "Done!"
+    exit 0
 fi
 touch "$FLAG_FILE"
 
@@ -197,6 +203,35 @@ for PROFILE_DIR in $PROFILE_DIRS; do
 
     echo "Updated browser.tabs.inTitlebar in profile: $PROFILE_DIR"
 done
+
+echo "🎨 Applying VScode theme settings..."
+# Find VS Code user settings.json
+SETTINGS_JSON="$HOME/.config/Code/User/settings.json"
+
+# If settings.json does not exist, create it with an empty JSON object
+if [ ! -f "$SETTINGS_JSON" ]; then
+    mkdir -p "$(dirname "$SETTINGS_JSON")"
+    echo "{}" > "$SETTINGS_JSON"
+fi
+
+# Use jq to safely update or add the key
+if command -v jq >/dev/null 2>&1; then
+    # Update settings.json in-place
+    tmpfile=$(mktemp)
+    jq '. + {"window.titleBarStyle":"native"}' "$SETTINGS_JSON" > "$tmpfile" && mv "$tmpfile" "$SETTINGS_JSON"
+    echo "✅ Updated $SETTINGS_JSON with \"window.titleBarStyle\": \"native\""
+else
+    # Fallback if jq is not installed: use sed/grep (less robust)
+    # Check if key exists
+    if grep -q '"window.titleBarStyle"' "$SETTINGS_JSON"; then
+        # Replace existing line
+        sed -i 's/"window.titleBarStyle".*/"window.titleBarStyle": "native",/' "$SETTINGS_JSON"
+    else
+        # Insert before the last closing brace
+        sed -i 's/}/,\n  "window.titleBarStyle": "native"\n}/' "$SETTINGS_JSON"
+    fi
+    echo "✅ Updated $SETTINGS_JSON with \"window.titleBarStyle\": \"native\" (without jq)"
+fi
 
 # === Done ===
 echo ""
