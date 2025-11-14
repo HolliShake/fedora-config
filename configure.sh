@@ -61,29 +61,80 @@ echo "⚙️  Applying Dash-to-Dock settings..."
 
 declare -A dash_settings=(
     ["apply-custom-theme"]=false
+    ["apply-glossy-effect"]=true
     ["autohide"]=true
     ["autohide-in-fullscreen"]=false
+    ["background-color"]="'#ffffff'"
     ["background-opacity"]=0.8
+    ["bolt-support"]=true
     ["click-action"]="'cycle-windows'"
+    ["custom-background-color"]=true
+    ["custom-theme-customize-running-dots"]=false
+    ["custom-theme-running-dots-border-color"]="'#ffffff'"
+    ["custom-theme-running-dots-border-width"]=0
+    ["custom-theme-running-dots-color"]="'#ffffff'"
     ["custom-theme-shrink"]=true
-    ["dash-max-icon-size"]=24
+    ["customize-alphas"]=false
+    ["dance-urgent-applications"]=true
+    ["dash-max-icon-size"]=35
+    ["default-windows-preview-to-open"]=false
+    ["disable-overview-on-startup"]=false
     ["dock-fixed"]=true
-    ["dock-position"]="'LEFT'"
-    ["extend-height"]=true
+    ["dock-position"]="'BOTTOM'"
+    ["extend-height"]=false
+    ["force-straight-corner"]=false
     ["height-fraction"]=1.0
     ["hide-delay"]=0.2
+    ["hide-tooltip"]=false
     ["hot-keys"]=true
+    ["hotkeys-overlay"]=true
+    ["hotkeys-show-dock"]=true
     ["icon-size-fixed"]=true
     ["intellihide"]=true
     ["intellihide-mode"]="'FOCUS_APPLICATION_WINDOWS'"
+    ["isolate-locations"]=true
+    ["isolate-monitors"]=true
+    ["isolate-workspaces"]=true
+    ["manualhide"]=false
+    ["max-alpha"]=0.8
+    ["middle-click-action"]="'launch'"
+    ["min-alpha"]=0.2
+    ["minimize-shift"]=true
     ["multi-monitor"]=true
     ["preferred-monitor"]=-2
-    ["show-apps-always-in-the-edge"]=true
+    ["preferred-monitor-by-connector"]="'HDMI-1'"
+    ["pressure-threshold"]=100.0
+    ["preview-size-scale"]=0.0
+    ["require-pressure-to-show"]=true
+    ["running-indicator-dominant-color"]=false
+    ["running-indicator-style"]="'DOT'"
+    ["scroll-action"]="'do-nothing'"
+    ["scroll-switch-workspace"]=true
+    ["scroll-to-focused-application"]=true
+    ["shift-click-action"]="'minimize'"
+    ["shift-middle-click-action"]="'launch'"
+    ["shortcut"]="['<Super>q']"
+    ["shortcut-text"]="'<Super>q'"
+    ["shortcut-timeout"]=2.0
+    ["show-apps-always-in-the-edge"]=false
     ["show-apps-at-top"]=true
+    ["show-delay"]=0.25
+    ["show-dock-urgent-notify"]=true
     ["show-favorites"]=true
-    ["show-trash"]=true
+    ["show-icons-emblems"]=true
+    ["show-icons-notifications-counter"]=true
+    ["show-mounts"]=false
+    ["show-mounts-network"]=false
+    ["show-mounts-only-mounted"]=true
     ["show-running"]=true
-    ["transparency-mode"]="'DEFAULT'"
+    ["show-show-apps-button"]=true
+    ["show-trash"]=true
+    ["show-windows-preview"]=true
+    ["transparency-mode"]="'DYNAMIC'"
+    ["unity-backlit-items"]=false
+    ["autohide-in-fullscreen"]=true
+    ["autohide"]=true
+    ["workspace-agnostic-urgent-windows"]=true
 )
 
 for key in "${!dash_settings[@]}"; do
@@ -93,10 +144,6 @@ for key in "${!dash_settings[@]}"; do
         echo "⚠ Skipping unknown Dash-to-Dock key: $key"
     fi
 done
-
-# Reinforce Show Applications position
-gsettings set org.gnome.shell.extensions.dash-to-dock show-apps-always-in-the-edge true
-gsettings set org.gnome.shell.extensions.dash-to-dock show-apps-at-top true
 
 # === Theme checks ===
 echo "🧩 Checking themes and icons..."
