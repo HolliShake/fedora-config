@@ -2,6 +2,8 @@
 # ==============================================================================
 # Unified macOS-like Theming Script for KDE Plasma 6 & GTK/GNOME
 # Validated + hardened version — no wallpaper handling included.
+# FIXED: Aurorae window decoration library/theme keys corrected so window
+#        decorations actually load instead of falling back to "no border".
 # ==============================================================================
 
 set -uo pipefail  # (not -e: we want to warn and continue, not abort on the first issue)
@@ -128,11 +130,21 @@ if $HAS_KDE_TOOLS; then
     kwriteconfig6 --file kwinrc --group DesktopSwitcher --key LayoutName "org.kde.breeze.desktop"
     kwriteconfig6 --file kwinrc --group WindowSwitcher --key LayoutName "org.kde.breeze.desktop"
 
-    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae.v2"
-    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "$AURORAE_THEME"
+    # --- FIXED: window decoration (Aurorae) section --------------------------
+    # The decoration plugin ID is "org.kde.kwin.aurorae" — there is NO
+    # ".v2" variant. Using the wrong plugin ID means KWin can't find any
+    # decoration plugin at all and falls back to drawing no border/titlebar.
+    #
+    # Additionally, Aurorae SVG themes must be referenced with the
+    # "__aurorae__svg__" prefix in front of the theme folder name, or KWin
+    # won't resolve it to the actual theme even with the right plugin.
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key library "org.kde.kwin.aurorae"
+    kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key theme "__aurorae__svg__$AURORAE_THEME"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key BorderSize "Tiny"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnLeft "XIA"
     kwriteconfig6 --file kwinrc --group org.kde.kdecoration2 --key ButtonsOnRight ""
+    ok "Set window decoration (Aurorae) to '$AURORAE_THEME'."
+    # ---------------------------------------------------------------------
 
     if has_cmd plasma-apply-desktoptheme; then
         if plasma-apply-desktoptheme "$PLASMA_STYLE" >/dev/null 2>&1; then
@@ -147,7 +159,7 @@ if $HAS_KDE_TOOLS; then
     kwriteconfig6 --file ksplashrc --group KSplash --key Theme "$SPLASH_THEME"
     ok "Set Splash Screen to '$SPLASH_THEME'."
 
-    # === FIXED KVANTUM SECTION (Combined Approach) ===
+    # === Kvantum section (Combined Approach) ===
     # Step 1: Forcefully write to the config file directly
     mkdir -p "$HOME/.config/Kvantum"
     KVANTUM_CONFIG_FILE="$HOME/.config/Kvantum/kvantum.kvconfig"
@@ -281,7 +293,7 @@ done
 # ==============================================================================
 if $HAS_KDE_TOOLS; then
     info "Reloading KWin and Plasma..."
-    
+
     # Determine the correct qdbus command for the system
     if has_cmd qdbus6; then
         QDBUS_CMD="qdbus6"
@@ -296,6 +308,22 @@ if $HAS_KDE_TOOLS; then
         $QDBUS_CMD org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null || warn "Could not refresh Plasma shell."
     else
         warn "Could not find 'qdbus' or 'qdbus6' to refresh the desktop live. Log out and back in to see all changes."
+    fi
+
+    # FIXED: 'reconfigure' reloads config values but doesn't always reload a
+    # newly-selected decoration plugin binding on Plasma 6. Restart KWin's
+    # own process in place (--replace) so the new decoration plugin actually
+    # loads without requiring a full logout/login.
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && has_cmd kwin_wayland; then
+        kwin_wayland --replace >/dev/null 2>&1 &
+        disown
+        ok "Restarted kwin_wayland to apply the new window decoration."
+    elif has_cmd kwin_x11; then
+        kwin_x11 --replace >/dev/null 2>&1 &
+        disown
+        ok "Restarted kwin_x11 to apply the new window decoration."
+    else
+        warn "Could not find kwin_x11/kwin_wayland to restart KWin in place. Log out and back in if decorations don't appear."
     fi
 fi
 
