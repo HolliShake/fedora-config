@@ -88,7 +88,6 @@ else
     warn "Plasma Style '$PLASMA_STYLE' not found under plasma/desktoptheme."
 fi
 
-# Added ~/.local/share/Kvantum to support standard user-installed paths
 KVANTUM_SEARCH_DIRS=("/usr/share/Kvantum" "$HOME/.local/share/Kvantum" "$HOME/.config/Kvantum")
 KVANTUM_THEME_DIR=""
 for base in "${KVANTUM_SEARCH_DIRS[@]}"; do
@@ -147,22 +146,20 @@ if $HAS_KDE_TOOLS; then
     kwriteconfig6 --file ksplashrc --group KSplash --key Theme "$SPLASH_THEME"
     ok "Set Splash Screen to '$SPLASH_THEME'."
 
-    # === FIXED KVANTUM SECTION ===
-    if has_cmd kvantummanager; then
-        # Prefer the native CLI tool which correctly handles configuration overrides and cache
-        kvantummanager --set "$KVANTUM_THEME" >/dev/null 2>&1
-        ok "Set Kvantum theme to '$KVANTUM_THEME' using kvantummanager."
-    elif [ -d "$HOME/.config/Kvantum" ] || has_cmd kvantum; then
-        mkdir -p "$HOME/.config/Kvantum"
-        # Always write to kvantum.kvconfig. Writing to kvantum-dark.kvconfig often gets ignored.
-        KVANTUM_CONFIG_FILE="$HOME/.config/Kvantum/kvantum.kvconfig"
-        cat > "$KVANTUM_CONFIG_FILE" <<EOF
+    # === FIXED KVANTUM SECTION (Combined Approach) ===
+    # Step 1: Forcefully write to the config file directly
+    mkdir -p "$HOME/.config/Kvantum"
+    KVANTUM_CONFIG_FILE="$HOME/.config/Kvantum/kvantum.kvconfig"
+    cat > "$KVANTUM_CONFIG_FILE" <<EOF
 [General]
 theme=$KVANTUM_THEME
 EOF
-        ok "Set Kvantum theme to '$KVANTUM_THEME' by directly writing to $(basename "$KVANTUM_CONFIG_FILE")."
-    else
-        warn "Kvantum does not appear to be installed (kvantummanager not found)."
+    ok "Set Kvantum theme to '$KVANTUM_THEME' by directly writing to $(basename "$KVANTUM_CONFIG_FILE")."
+
+    # Step 2: Push the update via the command-line tool if available
+    if has_cmd kvantummanager; then
+        kvantummanager --set "$KVANTUM_THEME" >/dev/null 2>&1
+        ok "Additionally triggered Kvantum update via 'kvantummanager --set'."
     fi
 
     ok "KDE Plasma settings applied."
@@ -185,8 +182,28 @@ if $HAS_GNOME_TOOLS; then
 fi
 
 # ==============================================================================
-# === GTK3 / GTK4 asset + CSS linking ==========================================
+# === GTK2 / GTK3 / GTK4 asset + CSS linking ===================================
 # ==============================================================================
+info "Generating GTK2 .gtkrc-2.0 configuration..."
+cat > "$HOME/.gtkrc-2.0" <<EOF
+gtk-enable-animations=1
+gtk-theme-name="$GTK_THEME"
+gtk-primary-button-warps-slider=1
+gtk-toolbar-style=3
+gtk-menu-images=1
+gtk-button-images=1
+gtk-cursor-blink-time=1000
+gtk-cursor-blink=1
+gtk-cursor-theme-size=$CURSOR_SIZE
+gtk-cursor-theme-name="$CURSOR_THEME"
+gtk-sound-theme-name="ocean"
+gtk-icon-theme-name="$ICON_THEME"
+gtk-font-name="Noto Sans,  10"
+
+gtk-modules=appmenu-gtk-module
+EOF
+ok "Created GTK 2.0 customized .gtkrc-2.0"
+
 info "Linking GTK3 and GTK4 theme files and generating settings..."
 
 for GTK_VERSION in "gtk-3.0" "gtk-4.0"; do
