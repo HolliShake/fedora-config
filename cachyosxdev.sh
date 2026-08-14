@@ -15,7 +15,7 @@ KVANTUM_THEME="WhiteSur"               # Kvantum registers ONE theme folder cont
                                         # actual Kvantum/WhiteSur/ directory in vinceliuice/WhiteSur-kde.
 PLASMA_STYLE="WhiteSur-dark"           # System Settings > Plasma Style (a.k.a. Desktop Theme)
 SPLASH_THEME="WhiteSur-dark"           # System Settings > Splash Screen
-AURORAE_THEME="__aurorae__svg__WhiteSur-dark"
+AURORAE_THEME="WhiteSur-dark"
 GTK_THEME="WhiteSur-Dark-solid"
 ICON_THEME="WhiteSur-dark"
 CURSOR_THEME="WhiteSur-cursors"
