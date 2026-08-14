@@ -30,10 +30,11 @@ has_cmd() { command -v "$1" >/dev/null 2>&1; }
 HAS_KDE_TOOLS=false
 HAS_GNOME_TOOLS=false
 
-if has_cmd kwriteconfig6 && has_cmd qdbus; then
+# Changed this to only strictly require kwriteconfig6 for the KDE section
+if has_cmd kwriteconfig6; then
     HAS_KDE_TOOLS=true
 else
-    warn "kwriteconfig6/qdbus not found — skipping KDE Plasma configuration."
+    warn "kwriteconfig6 not found — skipping KDE Plasma configuration."
 fi
 
 if has_cmd gsettings; then
@@ -280,8 +281,22 @@ done
 # ==============================================================================
 if $HAS_KDE_TOOLS; then
     info "Reloading KWin and Plasma..."
-    qdbus org.kde.KWin /KWin reconfigure 2>/dev/null || warn "Could not signal KWin to reconfigure."
-    qdbus org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null || warn "Could not refresh Plasma shell."
+    
+    # Determine the correct qdbus command for the system
+    if has_cmd qdbus6; then
+        QDBUS_CMD="qdbus6"
+    elif has_cmd qdbus; then
+        QDBUS_CMD="qdbus"
+    else
+        QDBUS_CMD=""
+    fi
+
+    if [ -n "$QDBUS_CMD" ]; then
+        $QDBUS_CMD org.kde.KWin /KWin reconfigure 2>/dev/null || warn "Could not signal KWin to reconfigure."
+        $QDBUS_CMD org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null || warn "Could not refresh Plasma shell."
+    else
+        warn "Could not find 'qdbus' or 'qdbus6' to refresh the desktop live. Log out and back in to see all changes."
+    fi
 fi
 
 echo "✨ macOS-style theme successfully applied (wallpaper untouched, as requested)."
