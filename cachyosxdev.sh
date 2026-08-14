@@ -674,9 +674,33 @@ if $HAS_KDE_TOOLS; then
 
     if [ -n "$QDBUS_CMD" ]; then
         $QDBUS_CMD org.kde.KWin /KWin reconfigure 2>/dev/null || warn "Could not signal KWin to reconfigure."
-        $QDBUS_CMD org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.refreshCurrentShell 2>/dev/null || warn "Could not refresh Plasma shell."
     else
-        warn "Could not find 'qdbus' or 'qdbus6' to refresh the desktop live. Log out and back in to see all changes."
+        warn "Could not find 'qdbus' or 'qdbus6' to signal KWin. Log out and back in to see all changes."
+    fi
+
+    # FIXED: there is no DBus method to "refresh" plasmashell as a whole —
+    # org.kde.PlasmaShell.refreshCurrentShell does not exist on Plasma 6's
+    # plasmashell interface (it only exposes things like evaluateScript),
+    # so that call was always guaranteed to fail. The actual documented
+    # way to make plasmashell pick up new Plasma Style / desktop theme /
+    # icon changes without logging out is to restart the plasmashell
+    # process itself, in place.
+    info "Restarting Plasma Shell to apply theme changes..."
+    if has_cmd kquitapp6 && has_cmd kstart; then
+        kquitapp6 plasmashell >/dev/null 2>&1
+        # Give the old process a moment to fully exit before relaunching.
+        sleep 1
+        kstart plasmashell >/dev/null 2>&1 &
+        disown
+        ok "Restarted plasmashell via kquitapp6/kstart."
+    elif has_cmd plasmashell; then
+        pkill -x plasmashell >/dev/null 2>&1
+        sleep 1
+        plasmashell --replace >/dev/null 2>&1 &
+        disown
+        ok "Restarted plasmashell via --replace."
+    else
+        warn "Could not find kquitapp6/kstart or plasmashell to restart the shell. Log out and back in to see all Plasma Style/icon changes."
     fi
 
     # FIXED: 'reconfigure' reloads config values but doesn't always reload a
