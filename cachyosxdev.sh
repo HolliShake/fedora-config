@@ -11,7 +11,7 @@ set -uo pipefail  # (not -e: we want to warn and continue, not abort on the firs
 # === User-defined variables ===
 KDE_COLOR_SCHEME="WhiteSurDark"
 KDE_WIDGET_STYLE="kvantum-dark"        # matches System Settings > Application Style: "kvantum-dark"
-KVANTUM_THEME="WhiteSur"               # Note: Depending on your installation, the dark variant might actually require "WhiteSurDark" here.
+KVANTUM_THEME="WhiteSurDark"           # Must match the *.kvconfig filename (e.g. /usr/share/kvantum/WhiteSur/WhiteSurDark.kvconfig), not a directory name.
 PLASMA_STYLE="WhiteSur-dark"           # System Settings > Plasma Style (a.k.a. Desktop Theme)
 SPLASH_THEME="WhiteSur-dark"           # System Settings > Splash Screen
 AURORAE_THEME="WhiteSur-dark"
@@ -91,18 +91,36 @@ else
     warn "Plasma Style '$PLASMA_STYLE' not found under plasma/desktoptheme."
 fi
 
-KVANTUM_SEARCH_DIRS=("/usr/share/Kvantum" "$HOME/.local/share/Kvantum" "$HOME/.config/Kvantum")
+# FIXED: Kvantum themes are NOT one-directory-per-variant. A "theme" like
+# "WhiteSurDark" is actually a *.kvconfig FILE living inside a parent
+# folder (commonly the base theme's folder), e.g.:
+#   /usr/share/kvantum/WhiteSur/WhiteSurDark.kvconfig
+# The old check looked for a directory literally named "$KVANTUM_THEME",
+# which never exists — that's why it reported "not found" even when the
+# theme was installed correctly. We now search recursively for a
+# "<theme>.kvconfig" file instead. We also check both "kvantum" and
+# "Kvantum" casing, since distros differ on this.
+KVANTUM_SEARCH_DIRS=(
+    "/usr/share/kvantum" "/usr/share/Kvantum"
+    "/usr/local/share/kvantum" "/usr/local/share/Kvantum"
+    "$HOME/.local/share/kvantum" "$HOME/.local/share/Kvantum"
+    "$HOME/.config/Kvantum"
+)
 KVANTUM_THEME_DIR=""
+KVANTUM_CONFIG_MATCH=""
 for base in "${KVANTUM_SEARCH_DIRS[@]}"; do
-    if [ -d "$base/$KVANTUM_THEME" ]; then
-        KVANTUM_THEME_DIR="$base/$KVANTUM_THEME"
+    [ -d "$base" ] || continue
+    match="$(find "$base" -maxdepth 3 -type f -iname "${KVANTUM_THEME}.kvconfig" -print -quit 2>/dev/null)"
+    if [ -n "$match" ]; then
+        KVANTUM_CONFIG_MATCH="$match"
+        KVANTUM_THEME_DIR="$(dirname "$match")"
         break
     fi
 done
 if [ -n "$KVANTUM_THEME_DIR" ]; then
-    ok "Found Kvantum theme at $KVANTUM_THEME_DIR"
+    ok "Found Kvantum theme config at $KVANTUM_CONFIG_MATCH"
 else
-    warn "Kvantum theme '$KVANTUM_THEME' not found in expected Kvantum directories."
+    warn "Kvantum theme '$KVANTUM_THEME' (${KVANTUM_THEME}.kvconfig) not found under any known Kvantum directory."
 fi
 
 # ==============================================================================
