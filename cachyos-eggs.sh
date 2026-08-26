@@ -542,15 +542,21 @@ if $REMASTER; then
         K_NAME="$(basename "$K_FILE")"
         INITRD_NAME="initramfs-${K_NAME#vmlinuz-}.img"
         
-        log INFO "Copying kernel ($K_NAME) for Eggs..."
+        log INFO "Preparing kernel ($K_NAME) and initramfs across all target paths..."
         
-        # Directly copy instead of symlinking to avoid FAT32 "Operation not permitted"
-        cp -f "/boot/$K_NAME" /boot/vmlinuz
+        # Copy kernel to all default paths searched by Eggs across distributions
+        cp -f "/boot/$K_NAME" /boot/vmlinuz-linux 2>/dev/null || true
+        cp -f "/boot/$K_NAME" /boot/vmlinuz 2>/dev/null || true
+        cp -f "/boot/$K_NAME" /vmlinuz 2>/dev/null || true
         
+        # Copy corresponding initramfs/initrd
         if [[ -f "/boot/$INITRD_NAME" ]]; then
-            cp -f "/boot/$INITRD_NAME" /boot/initrd.img
+            cp -f "/boot/$INITRD_NAME" /boot/initramfs-linux.img 2>/dev/null || true
+            cp -f "/boot/$INITRD_NAME" /boot/initrd.img 2>/dev/null || true
+            cp -f "/boot/$INITRD_NAME" /initrd.img 2>/dev/null || true
         elif [[ -f "/boot/initramfs-linux.img" ]]; then
-            cp -f /boot/initramfs-linux.img /boot/initrd.img
+            cp -f /boot/initramfs-linux.img /boot/initrd.img 2>/dev/null || true
+            cp -f /boot/initramfs-linux.img /initrd.img 2>/dev/null || true
         fi
     else
         log WARN "Could not find /boot/vmlinuz-linux*. Proceeding anyway..."
