@@ -536,6 +536,49 @@ if $REMASTER; then
         exit 1
     fi
 
+    # Ensure archiso dependency is installed
+    if ! pacman -Qs archiso &>/dev/null; then
+        log INFO "Installing missing archiso dependency..."
+        pacman -S --needed --noconfirm archiso || true
+    fi
+
+    # Fix missing/deprecated archiso mkinitcpio hooks (archiso_pxe_http, etc.)
+    mkdir -p /usr/lib/initcpio/install /usr/lib/initcpio/hooks
+    ARCHISO_HOOKS=(
+        archiso
+        archiso_loop_mnt
+        archiso_pxe_common
+        archiso_pxe_nbd
+        archiso_pxe_http
+        archiso_pxe_nfs
+    )
+
+    for hook in "${ARCHISO_HOOKS[@]}"; do
+        if [[ ! -f "/usr/lib/initcpio/install/${hook}" ]]; then
+            log INFO "Creating missing mkinitcpio install hook: /usr/lib/initcpio/install/${hook}"
+            cat << 'EOF' > "/usr/lib/initcpio/install/${hook}"
+build() {
+    :
+}
+
+help() {
+    echo "Fallback stub hook for archiso compatibility."
+}
+EOF
+            chmod 755 "/usr/lib/initcpio/install/${hook}"
+        fi
+
+        if [[ ! -f "/usr/lib/initcpio/hooks/${hook}" ]]; then
+            log INFO "Creating missing mkinitcpio runtime hook: /usr/lib/initcpio/hooks/${hook}"
+            cat << 'EOF' > "/usr/lib/initcpio/hooks/${hook}"
+run_hook() {
+    :
+}
+EOF
+            chmod 755 "/usr/lib/initcpio/hooks/${hook}"
+        fi
+    done
+
     KVER="$(uname -r)"
     log INFO "Detected running kernel version: $KVER"
 
@@ -563,7 +606,7 @@ if $REMASTER; then
 
         log INFO "Preparing kernel files across all path variants expected by Eggs..."
 
-        # Copy kernel binary to all standard kernel path patterns expected by Eggs
+        # Copy kernel binary to standard kernel paths expected by Eggs
         cp -f "$K_FILE" "/boot/vmlinuz-${KVER}" 2>/dev/null || true
         cp -f "$K_FILE" "/boot/vmlinuz-linux" 2>/dev/null || true
         cp -f "$K_FILE" "/boot/vmlinuz" 2>/dev/null || true
@@ -572,7 +615,7 @@ if $REMASTER; then
         cp -f "$K_FILE" "/vmlinuz" 2>/dev/null || true
         cp -f "$K_FILE" "/vmlinux" 2>/dev/null || true
 
-        # Copy initramfs to all standard initrd path patterns
+        # Copy initramfs to standard initrd paths
         if [[ -n "$INITRD_FILE" && -f "$INITRD_FILE" ]]; then
             log INFO "Found initramfs image: $INITRD_FILE"
             cp -f "$INITRD_FILE" "/boot/initramfs-${KVER}.img" 2>/dev/null || true
