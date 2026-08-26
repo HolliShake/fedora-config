@@ -542,14 +542,15 @@ if $REMASTER; then
         K_NAME="$(basename "$K_FILE")"
         INITRD_NAME="initramfs-${K_NAME#vmlinuz-}.img"
         
-        log INFO "Configuring kernel ($K_NAME) for Eggs..."
-        # Try symlinking; fall back to copying if /boot is a FAT32 partition
-        ln -sf "/boot/$K_NAME" /boot/vmlinuz 2>/dev/null || cp -f "/boot/$K_NAME" /boot/vmlinuz
+        log INFO "Copying kernel ($K_NAME) for Eggs..."
+        
+        # Directly copy instead of symlinking to avoid FAT32 "Operation not permitted"
+        cp -f "/boot/$K_NAME" /boot/vmlinuz
         
         if [[ -f "/boot/$INITRD_NAME" ]]; then
-            ln -sf "/boot/$INITRD_NAME" /boot/initrd.img 2>/dev/null || cp -f "/boot/$INITRD_NAME" /boot/initrd.img
+            cp -f "/boot/$INITRD_NAME" /boot/initrd.img
         elif [[ -f "/boot/initramfs-linux.img" ]]; then
-            ln -sf /boot/initramfs-linux.img /boot/initrd.img 2>/dev/null || cp -f /boot/initramfs-linux.img /boot/initrd.img
+            cp -f /boot/initramfs-linux.img /boot/initrd.img
         fi
     else
         log WARN "Could not find /boot/vmlinuz-linux*. Proceeding anyway..."
