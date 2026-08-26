@@ -3,7 +3,7 @@
 # export-kde-theme-to-skel.sh
 #
 # Full KDE Plasma + GTK "look & feel" exporter, for baking a themed config
-# into a system installer/image. 
+# into a system installer/image.
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ for arg in "$@"; do
         --diff)       DIFF_MODE=true ;;
         --rollback)   ROLLBACK=true ;;
         --backup=*)   ROLLBACK_ARCHIVE="${arg#--backup=}" ;;
-        --backup)     : ;; 
+        --backup)     : ;;
         -h|--help)
             awk '/^#!/{next} /^#/{print substr($0,3); next} {exit}' "$0"
             exit 0
@@ -80,6 +80,25 @@ log() {
 human_size() {
     local bytes="$1"
     numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes}B"
+}
+
+# Percent-decode a URI component (turns %20 -> space, etc). KDE frequently
+# stores wallpaper paths as file:// URIs with spaces/unicode percent-encoded,
+# which previously broke both the `[[ -f "$path" ]]` existence check and the
+# basename used to name the rehomed copy. Falls back to the raw string if
+# printf chokes on a malformed escape, so a bad %-sequence can never abort
+# the whole run under `set -e`.
+urldecode() {
+    local data="${1//+/ }"
+    printf '%b' "${data//%/\\x}" 2>/dev/null || printf '%s' "$1"
+}
+
+# Strip anything that isn't safe in a flat filename, so a decoded/rehomed
+# wallpaper name can never inject path separators or shell-special chars.
+sanitize_basename() {
+    local name="$1"
+    name="${name//[^A-Za-z0-9._-]/_}"
+    printf '%s' "$name"
 }
 
 echo "${C_BOLD}Source home : $SRC_HOME${C_RESET}"
@@ -327,28 +346,45 @@ if [[ "$APPLY" == true ]]; then
 
     rehome_wallpaper_uri() {
         local uri="$1" cfgfile="$2"
-        local path="${uri#file://}"
+        local raw_path="${uri#file://}"
+        local path
+        path="$(urldecode "$raw_path")"          # fix: decode %20 etc. before touching the filesystem
         [[ -f "$path" ]] || return 0
-        local base
-        base="$(basename "$path")"
+
+        # fix: hash the *original* source path into the destination name so two
+        # different wallpapers that happen to share a basename (e.g. one per
+        # monitor/activity, each called "wallpaper.jpg" in a different folder)
+        # can never silently clobber each other via cp -n.
+        local src_hash safe_base destname destpath
+        src_hash="$(printf '%s' "$path" | sha256sum | cut -c1-8)"
+        safe_base="$(sanitize_basename "$(basename "$path")")"
+        destname="${src_hash}-${safe_base}"
+        destpath="${WALLPAPER_SYSTEM_DIR}/${destname}"
+
         sudo mkdir -p "$WALLPAPER_SYSTEM_DIR"
-        sudo cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
-        
+        if sudo test -e "$destpath"; then
+            echo "  -> Already rehomed: $(basename "$path") -> $destpath"
+        else
+            sudo cp "$path" "$destpath"
+            echo "  -> Rehomed: $(basename "$path") -> $destpath"
+            WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
+        fi
+
         local new_uri
         if [[ "$uri" == file://* ]]; then
-            new_uri="file://${WALLPAPER_SYSTEM_DIR}/${base}"
+            new_uri="file://${destpath}"
         else
-            new_uri="${WALLPAPER_SYSTEM_DIR}/${base}"
+            new_uri="${destpath}"
         fi
-        
+
+        # Rewrite the literal (still-encoded, if it was) string that grep found,
+        # not the decoded path -- that's what's actually sitting in the config file.
         local esc_uri esc_new
         esc_uri="$(printf '%s' "$uri" | sed -e 's/[.[\*^$#&]/\\&/g')"
         esc_new="$(printf '%s' "$new_uri" | sed -e 's/[#&\\]/\\&/g')"
         sudo sed -i "s#${esc_uri}#${esc_new}#g" "$cfgfile"
-        echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
-        WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
     }
-    
+
     for cfgfile in "${WALLPAPER_CFG_FILES[@]}"; do
         [[ -f "$cfgfile" ]] || continue
         while IFS= read -r match; do
@@ -375,9 +411,13 @@ if [[ "$APPLY" == true ]]; then
         fi
     fi
 
+    # fix: this used to count *every* leftover symlink as "broken". cp -aL
+    # dereferences anything it can, so what's left should already be mostly
+    # broken links -- but we now actually verify that, instead of assuming it.
     while IFS= read -r symlink; do
-        tgt="$(sudo readlink "$symlink" || true)"
-        BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
+        if ! sudo test -e "$symlink"; then
+            BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
+        fi
     done < <(sudo find "$SKEL" -type l 2>/dev/null)
 
     sudo chown -Rh root:root "$SKEL"
