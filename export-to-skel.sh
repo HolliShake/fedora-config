@@ -13,10 +13,10 @@
 #
 # Usage:
 #   ./export-kde-theme-to-skel.sh                    # dry-run preview, everything
-#   sudo ./export-kde-theme-to-skel.sh --apply        # export EVERYTHING for real
+#   sudo ./export-kde-theme-to-skel.sh --apply         # export EVERYTHING for real
 #   sudo ./export-kde-theme-to-skel.sh --apply --no-dconf   # skip dconf
-#   ./export-kde-theme-to-skel.sh --diff              # show what WOULD change, no writes
-#   sudo ./export-kde-theme-to-skel.sh --rollback     # restore /etc/skel + dconf from
+#   ./export-kde-theme-to-skel.sh --diff               # show what WOULD change, no writes
+#   sudo ./export-kde-theme-to-skel.sh --rollback      # restore /etc/skel + dconf from
 #                                                      #   the most recent backup
 #   sudo ./export-kde-theme-to-skel.sh --rollback --backup /path/to/skel-backup-*.tar.gz
 #
@@ -41,6 +41,7 @@
 #     dereferenced (broken target) is reported after the copy.
 #   - Wallpaper Image= references (absolute paths with your username in them)
 #     are rewritten to a stable system path so they aren't $HOME-bound either.
+#     (Now includes full support for CachyOS Konsole profiles and shell dotfiles).
 #
 # Notes:
 #   - Must be run as the user whose config you want to export (NOT as root),
@@ -228,6 +229,14 @@ echo
 
 # --- List of config paths (relative to $HOME) to export ---------------------
 CONFIG_FILES=(
+    # Added Shell integration files for CachyOS
+    .bashrc
+    .zshrc
+    .bash_profile
+    .zprofile
+    .config/starship.toml
+    
+    # KDE/Plasma/GTK configs
     .config/kdeglobals
     .config/kwinrc
     .config/plasmarc
@@ -238,24 +247,15 @@ CONFIG_FILES=(
     .config/gtkrc-2.0
     .config/xsettingsd
     .gtkrc-2.0
-    # Cursor theme + size (Mouse/cursorTheme, Mouse/cursorSize) — written by
-    # the theming script via kwriteconfig6 but previously not exported here.
+    # Cursor theme + size (Mouse/cursorTheme, Mouse/cursorSize)
     .config/kcminputrc
     # Window rules that FORCE server-side decorations for Firefox/Chromium
-    # (see the theming script's kwinrulesrc python block). Without this,
-    # a new user gets the Aurorae decoration engine (from kwinrc) but not
-    # the per-app rule that makes browsers actually respect it.
     .config/kwinrulesrc
-    # Konsole's default-profile pointer + general settings. Without this,
-    # the custom profile/colorscheme FILES under .local/share/konsole are
-    # copied but nothing tells Konsole to actually use them — a new user
-    # just gets Konsole's stock built-in default.
+    # Konsole's default-profile pointer + general settings
     .config/konsolerc
 )
 
-
-
-# GTK config directories
+# GTK & Integration config directories
 CONFIG_DIRS=(
     .config/gtk-2.0
     .config/gtk-3.0
@@ -264,6 +264,10 @@ CONFIG_DIRS=(
     .config/kvantum
     .config/fontconfig
     .config/plasma-workspace/env
+    
+    # Added CachyOS Terminal Enhancements
+    .config/fastfetch
+    .config/fish
 )
 
 # Local data: themes, icons, cursors, fonts, color schemes
@@ -355,14 +359,6 @@ TOTAL_FILES=0
 TOTAL_BYTES=0
 
 # --- Helper: copy one item preserving relative path -------------------------
-# IMPORTANT: this fully DEREFERENCES symlinks (-L). For a distro build, skel
-# must be self-contained — a symlink to /usr/share/themes/X or to $HOME is a
-# dependency on something that may not exist on the target machine at all.
-# So every symlink encountered (wherever it points) is resolved to its real
-# file content at export time. GTK4/libadwaita apps in particular look for
-# literal files at ~/.config/gtk-4.0/{gtk.css,gtk-dark.css,...} — theme
-# installers normally just symlink those to the theme package; we want the
-# actual bytes there instead so nothing else needs to be installed.
 copy_item() {
     local rel="$1"
     local src="${SRC_HOME}/${rel}"
@@ -372,18 +368,9 @@ copy_item() {
 
     echo "  + $rel"
     if [[ "$APPLY" == true ]]; then
-        # Wipe the destination first. Otherwise a stale symlink (or any other
-        # leftover) from a PREVIOUS run sits there untouched if the source no
-        # longer has a matching item to overwrite it with — silently leaving
-        # old, possibly-broken content behind. The timestamped backup taken
-        # earlier in this script covers this for rollback purposes.
         sudo rm -rf "$dest"
 
         if [[ -d "$src" ]]; then
-            # Directory: create target directory and copy contents explicitly
-            # using '/.' to prevent cp from creating nested directory trees.
-            # -L dereferences any symlinks found inside (e.g. gtk-4.0/gtk-dark.css
-            # -> real theme file), so the copy is self-contained.
             sudo mkdir -p "$dest"
             if ! sudo cp -aL --no-preserve=ownership "$src"/. "$dest"/ 2>/tmp/copy-err.$$; then
                 log WARN "Some items under $rel could not be fully dereferenced (likely a broken symlink pointing at a missing theme file):"
@@ -391,8 +378,6 @@ copy_item() {
             fi
             rm -f /tmp/copy-err.$$
         else
-            # File (or top-level symlink to a file): create parent directory,
-            # dereference into real content.
             sudo mkdir -p "$(dirname "$dest")"
             sudo cp -aL --no-preserve=ownership "$src" "$dest"
         fi
@@ -426,27 +411,21 @@ BROKEN_SYMLINKS=0
 WALLPAPERS_REHOMED=0
 if [[ "$APPLY" == true ]]; then
 
-    # --- Rehome wallpaper file:// references out of $SRC_HOME -------------
-    # plasma-org.kde.plasma.desktop-appletsrc (and sometimes kdeglobals)
-    # stores the wallpaper as an absolute file:// path under the exporting
-    # user's home. Copied as-is, that path is meaningless (or wrong) for a
-    # new user. Move the actual image(s) to a stable system location and
-    # rewrite the reference(s) to point there instead.
-    #
-    # IMPORTANT: this does NOT only look for a line starting with "Image=".
-    # The default org.kde.image plugin uses that key, but org.kde.slideshow
-    # (multi-image slideshow wallpaper) uses "SlidePaths=" instead, often
-    # with several comma-separated paths on one line — anchoring to
-    # "^Image=" silently misses that case entirely, which is one likely
-    # reason a slideshow-configured wallpaper wasn't carried over. Instead,
-    # scan the whole file for any file://$SRC_HOME/... URI regardless of
-    # which key it's attached to, so any wallpaper plugin's own key name is
-    # caught the same way.
-    log INFO "Rehoming wallpaper file:// references out of \$SRC_HOME..."
+    # --- Rehome wallpaper references out of $SRC_HOME ---------------------
+    log INFO "Rehoming wallpaper image references (Plasma + Konsole) out of \$SRC_HOME..."
     WALLPAPER_CFG_FILES=(
         "$SKEL/.config/plasma-org.kde.plasma.desktop-appletsrc"
         "$SKEL/.config/kdeglobals"
     )
+
+    # CachyOS/Konsole profiles often hardcode background images using plain absolute paths.
+    # We dynamically fetch all profiles and color schemes from SKEL to clean them too.
+    if [[ -d "$SKEL/.local/share/konsole" ]]; then
+        while IFS= read -r kfile; do
+            WALLPAPER_CFG_FILES+=("$kfile")
+        done < <(sudo find "$SKEL/.local/share/konsole" -type f \( -name "*.profile" -o -name "*.colorscheme" \) 2>/dev/null)
+    fi
+
     rehome_wallpaper_uri() {
         local uri="$1" cfgfile="$2"
         local path="${uri#file://}"
@@ -455,11 +434,14 @@ if [[ "$APPLY" == true ]]; then
         base="$(basename "$path")"
         sudo mkdir -p "$WALLPAPER_SYSTEM_DIR"
         sudo cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
-        local new_uri="file://${WALLPAPER_SYSTEM_DIR}/${base}"
-        # Escape sed/regex metacharacters on both sides (filenames can
-        # contain '.', which is a regex wildcard) — '#' is our sed
-        # delimiter so a literal '/' needs no escaping, but '.', '*',
-        # '^', '$', '[', and a literal '#' or '&' all do.
+        
+        local new_uri
+        if [[ "$uri" == file://* ]]; then
+            new_uri="file://${WALLPAPER_SYSTEM_DIR}/${base}"
+        else
+            new_uri="${WALLPAPER_SYSTEM_DIR}/${base}"
+        fi
+        
         local esc_uri esc_new
         esc_uri="$(printf '%s' "$uri" | sed -e 's/[.[\*^$#&]/\\&/g')"
         esc_new="$(printf '%s' "$new_uri" | sed -e 's/[#&\\]/\\&/g')"
@@ -467,26 +449,28 @@ if [[ "$APPLY" == true ]]; then
         echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
         WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
     }
+    
     for cfgfile in "${WALLPAPER_CFG_FILES[@]}"; do
         [[ -f "$cfgfile" ]] || continue
-        while IFS= read -r uri; do
-            [[ -n "$uri" ]] || continue
-            rehome_wallpaper_uri "$uri" "$cfgfile"
-        done < <(sudo grep -hoE "file://${SRC_HOME}[^,\"' 	]*" "$cfgfile" 2>/dev/null | sort -u)
+        while IFS= read -r match; do
+            [[ -n "$match" ]] || continue
+            rehome_wallpaper_uri "$match" "$cfgfile"
+        # We run 2 passes to securely match:
+        # 1. file:// URIs (Plasma standards)
+        # 2. Plain paths ending in known image extensions (Konsole plain-path standards)
+        done < <( {
+            sudo grep -hoE "file://${SRC_HOME}[^,\"\']*" "$cfgfile" 2>/dev/null
+            sudo grep -hoE "${SRC_HOME}[^,\"\']*\.(png|jpg|jpeg|webp|gif|svg|bmp|heic)" "$cfgfile" 2>/dev/null
+        } | sort -u )
     done
+
     if [[ "$WALLPAPERS_REHOMED" -gt 0 ]]; then
         sudo chmod -R go+rX "$WALLPAPER_SYSTEM_DIR"
         log OK "Rehomed $WALLPAPERS_REHOMED wallpaper reference(s) to $WALLPAPER_SYSTEM_DIR."
     else
-        log INFO "No \$HOME-bound wallpaper file:// references found to rehome."
+        log INFO "No \$HOME-bound wallpaper image references found to rehome."
     fi
 
-    # --- Verify the export is actually self-contained ---------------------
-    # After -L dereferencing above, nothing under $SKEL should still be a
-    # symlink. If something is, it means cp couldn't resolve it (a broken
-    # symlink whose target theme file/dir doesn't exist) — flag it loudly,
-    # since a distro image built from this skel would ship the same break
-    # to every new user.
     log INFO "Verifying export is self-contained (no leftover symlinks)..."
     while IFS= read -r symlink; do
         tgt="$(sudo readlink "$symlink" || true)"
@@ -541,8 +525,6 @@ if [[ "$WITH_DCONF" == true ]]; then
         if [[ "$APPLY" == true ]]; then
             sudo mkdir -p /etc/dconf/db/site.d /etc/dconf/profile
             sudo cp "$DUMP_FILE" /etc/dconf/db/site.d/00-gtk-theme
-            # Point the default user profile at the system 'site' db as a
-            # fallback layer beneath each user's own settings.
             if [[ ! -f /etc/dconf/profile/user ]]; then
                 printf 'user-db:user\nsystem-db:site\n' | sudo tee /etc/dconf/profile/user >/dev/null
             fi
@@ -565,15 +547,15 @@ echo "${C_BOLD}Export bundle root: $EXPORT_DIR${C_RESET}"
 if [[ "$APPLY" == true ]]; then
     echo
     echo "${C_BOLD}Summary${C_RESET}"
-    echo "  Files copied     : $TOTAL_FILES"
-    echo "  Total size       : $(human_size "$TOTAL_BYTES")"
-    echo "  Manifest         : $MANIFEST_FILE"
+    echo "  Files copied      : $TOTAL_FILES"
+    echo "  Total size        : $(human_size "$TOTAL_BYTES")"
+    echo "  Manifest          : $MANIFEST_FILE"
     echo "  Wallpapers rehomed: $WALLPAPERS_REHOMED (to $WALLPAPER_SYSTEM_DIR)"
-    [[ -n "$BACKUP_ARCHIVE" ]] && echo "  Backup           : $BACKUP_ARCHIVE"
+    [[ -n "$BACKUP_ARCHIVE" ]] && echo "  Backup            : $BACKUP_ARCHIVE"
     if [[ "$BROKEN_SYMLINKS" -gt 0 ]]; then
         log WARN "$BROKEN_SYMLINKS leftover symlink(s) under /etc/skel — skel is NOT fully self-contained. Check the warnings above."
     else
         log OK "Skel is fully self-contained — no symlinks left under /etc/skel."
     fi
-    echo "  Log              : $LOG_FILE"
+    echo "  Log               : $LOG_FILE"
 fi
