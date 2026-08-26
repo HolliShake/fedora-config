@@ -344,6 +344,10 @@ if [[ "$APPLY" == true ]]; then
         done < <(sudo find "$SKEL/.local/share/konsole" -type f \( -name "*.profile" -o -name "*.colorscheme" \) 2>/dev/null)
     fi
 
+    # Tracks the first wallpaper we successfully rehome, so we can also point
+    # Plasma's own *schema-level* default at it below -- see patch_system_wallpaper_default.
+    PRIMARY_WALLPAPER_DESTPATH=""
+
     rehome_wallpaper_uri() {
         local uri="$1" cfgfile="$2"
         local raw_path="${uri#file://}"
@@ -369,6 +373,8 @@ if [[ "$APPLY" == true ]]; then
             echo "  -> Rehomed: $(basename "$path") -> $destpath"
             WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
         fi
+
+        [[ -z "$PRIMARY_WALLPAPER_DESTPATH" ]] && PRIMARY_WALLPAPER_DESTPATH="$destpath"
 
         local new_uri
         if [[ "$uri" == file://* ]]; then
@@ -399,6 +405,77 @@ if [[ "$APPLY" == true ]]; then
     if [[ "$WALLPAPERS_REHOMED" -gt 0 ]]; then
         sudo chmod -R go+rX "$WALLPAPER_SYSTEM_DIR"
         log OK "Rehomed $WALLPAPERS_REHOMED wallpaper reference(s) to $WALLPAPER_SYSTEM_DIR."
+    fi
+
+    # =========================================================================
+    # SYSTEM-WIDE WALLPAPER DEFAULT (the actual fix for "new users don't get it")
+    # =========================================================================
+    # Copying appletsrc into skel only helps if Plasma reuses that exact
+    # containment/activity state on a new user's very first login -- it often
+    # doesn't. The mechanism KDE itself documents for a reliable per-machine
+    # default is the plugin's own KConfigXT schema default, which is what
+    # Plasma falls back to whenever it has to build a containment from
+    # scratch (precisely the brand-new-user case). Patch both there and in
+    # skel so it works whichever path Plasma actually takes.
+    patch_system_wallpaper_default() {
+        local wallpaper_path="$1"
+        local xml_escaped="${wallpaper_path//&/&amp;}"
+        xml_escaped="${xml_escaped//</&lt;}"
+        xml_escaped="${xml_escaped//>/&gt;}"
+
+        local candidates=(
+            /usr/share/plasma/wallpapers/org.kde.image/contents/config/main.xml
+            /usr/share/plasma/wallpapers/org.kde.image/contents/config/Main.xml
+        )
+        local patched_any=false
+        local f
+        for f in "${candidates[@]}"; do
+            sudo test -f "$f" || continue
+
+            local tmp_out="/tmp/main-xml-patch.$$"
+            if ! sudo cat "$f" | awk -v newval="$xml_escaped" '
+                BEGIN { in_entry = 0 }
+                {
+                    line = $0
+                    if (line ~ /<entry[ \t]+name="Image"[ \t]+type="String"/) { in_entry = 1 }
+                    if (in_entry && match(line, /<default>.*<\/default>/)) {
+                        sub(/<default>.*<\/default>/, "<default>" newval "</default>", line)
+                        in_entry = 0
+                    }
+                    print line
+                }
+            ' > "$tmp_out"; then
+                log WARN "Could not parse $f -- leaving the system default wallpaper untouched there."
+                rm -f "$tmp_out"
+                continue
+            fi
+
+            if ! grep -qF "<default>${xml_escaped}</default>" "$tmp_out"; then
+                log WARN "Didn't find an Image default entry to patch in $f (schema may have changed) -- left untouched."
+                rm -f "$tmp_out"
+                continue
+            fi
+
+            # Keep the pristine, pre-patch file once, so it's obvious what changed
+            # and it's easy to hand-revert without needing a full package reinstall.
+            sudo test -f "${f}.pre-export-orig" || sudo cp "$f" "${f}.pre-export-orig"
+            sudo cp "$tmp_out" "$f"
+            rm -f "$tmp_out"
+            patched_any=true
+            log OK "Set system-wide default wallpaper in $f -> $wallpaper_path"
+        done
+
+        if ! $patched_any; then
+            log WARN "No org.kde.image main.xml found/patched -- new users will depend solely on the copied appletsrc, which is not fully reliable."
+        else
+            log WARN "Note: a future 'pacman -Syu' that updates plasma-workspace can silently overwrite this file back to stock. Re-run this script (or re-apply the patch) after such updates if you rebuild the image later."
+        fi
+    }
+
+    if [[ -n "$PRIMARY_WALLPAPER_DESTPATH" ]]; then
+        patch_system_wallpaper_default "$PRIMARY_WALLPAPER_DESTPATH"
+    else
+        log WARN "No custom wallpaper reference found under \$SRC_HOME -- if you're using a bundled/system wallpaper already, there's nothing to rehome, which is fine."
     fi
 
     # =========================================================================
