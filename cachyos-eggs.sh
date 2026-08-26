@@ -2,8 +2,8 @@
 #
 # cachyos-eggs.sh
 #
-# Unified KDE Plasma/GTK Theme Exporter & System Remastering Script
-# Exports current desktop configurations to /etc/skel and triggers Penguins' Eggs.
+# Unified KDE Plasma + GTK Theme Exporter & System Remastering Script
+# Bakes user configuration into /etc/skel and triggers Penguins' Eggs.
 
 set -euo pipefail
 
@@ -23,7 +23,7 @@ for arg in "$@"; do
         --diff)       DIFF_MODE=true ;;
         --rollback)   ROLLBACK=true ;;
         --backup=*)   ROLLBACK_ARCHIVE="${arg#--backup=}" ;;
-        --backup)     : ;; 
+        --backup)     : ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
@@ -47,7 +47,7 @@ if $ROLLBACK && [[ -z "$ROLLBACK_ARCHIVE" ]]; then
     done
 fi
 
-# Determine normal user if script is run via sudo
+# Detect true user and home directory (even when executed with sudo)
 if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
     REAL_USER="$SUDO_USER"
     SRC_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
@@ -56,14 +56,14 @@ else
     SRC_HOME="$HOME"
 fi
 
-EXPORT_DIR="${SRC_HOME}/kde-theme-export"
+EXPORT_DIR="${EXPORT_DIR:-$SRC_HOME/kde-theme-export}"
 BACKUP_DIR="${EXPORT_DIR}/backups"
 MANIFEST_DIR="${EXPORT_DIR}/manifests"
 LOG_FILE="${EXPORT_DIR}/export.log"
 
 SKEL="/etc/skel"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-WALLPAPER_SYSTEM_DIR="/usr/share/wallpapers/exported-theme"
+WALLPAPER_SYSTEM_DIR="${WALLPAPER_SYSTEM_DIR:-/usr/share/wallpapers/exported-theme}"
 
 if [[ -t 1 ]]; then
     C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'
@@ -91,6 +91,17 @@ log() {
 human_size() {
     local bytes="$1"
     numfmt --to=iec --suffix=B "$bytes" 2>/dev/null || echo "${bytes}B"
+}
+
+urldecode() {
+    local data="${1//+/ }"
+    printf '%b' "${data//%/\\x}" 2>/dev/null || printf '%s' "$1"
+}
+
+sanitize_basename() {
+    local name="$1"
+    name="${name//[^A-Za-z0-9._-]/_}"
+    printf '%s' "$name"
 }
 
 echo "${C_BOLD}Source home : $SRC_HOME${C_RESET}"
@@ -274,7 +285,11 @@ copy_item() {
 
         if [[ -d "$src" ]]; then
             mkdir -p "$dest"
-            cp -aL --no-preserve=ownership "$src"/. "$dest"/ 2>/dev/null || true
+            if ! cp -aL --no-preserve=ownership "$src"/. "$dest"/ 2>/tmp/copy-err.$$; then
+                log WARN "Some items under $rel could not be fully dereferenced (broken symlinks):"
+                sed 's/^/      /' /tmp/copy-err.$$ 2>/dev/null || true
+            fi
+            rm -f /tmp/copy-err.$$
         else
             mkdir -p "$(dirname "$dest")"
             cp -aL --no-preserve=ownership "$src" "$dest"
@@ -312,7 +327,7 @@ if [[ "$APPLY" == true ]]; then
     # =========================================================================
     # WALLPAPER REHOMING
     # =========================================================================
-    log INFO "Rehoming wallpaper image references (Plasma + Konsole)..."
+    log INFO "Rehoming wallpaper image references (Plasma + Konsole) out of $SRC_HOME..."
     WALLPAPER_CFG_FILES=(
         "$SKEL/.config/plasma-org.kde.plasma.desktop-appletsrc"
         "$SKEL/.config/kdeglobals"
@@ -324,30 +339,45 @@ if [[ "$APPLY" == true ]]; then
         done < <(find "$SKEL/.local/share/konsole" -type f \( -name "*.profile" -o -name "*.colorscheme" \) 2>/dev/null)
     fi
 
+    PRIMARY_WALLPAPER_DESTPATH=""
+
     rehome_wallpaper_uri() {
         local uri="$1" cfgfile="$2"
-        local path="${uri#file://}"
+        local raw_path="${uri#file://}"
+        local path
+        path="$(urldecode "$raw_path")"
         [[ -f "$path" ]] || return 0
-        local base
-        base="$(basename "$path")"
+
+        local src_hash safe_base destname destpath
+        src_hash="$(printf '%s' "$path" | sha256sum | cut -c1-8)"
+        safe_base="$(sanitize_basename "$(basename "$path")")"
+        destname="${src_hash}-${safe_base}"
+        destpath="${WALLPAPER_SYSTEM_DIR}/${destname}"
+
         mkdir -p "$WALLPAPER_SYSTEM_DIR"
-        cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
-        
+        if test -e "$destpath"; then
+            echo "  -> Already rehomed: $(basename "$path") -> $destpath"
+        else
+            cp "$path" "$destpath"
+            echo "  -> Rehomed: $(basename "$path") -> $destpath"
+            WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
+        fi
+
+        [[ -z "$PRIMARY_WALLPAPER_DESTPATH" ]] && PRIMARY_WALLPAPER_DESTPATH="$destpath"
+
         local new_uri
         if [[ "$uri" == file://* ]]; then
-            new_uri="file://${WALLPAPER_SYSTEM_DIR}/${base}"
+            new_uri="file://${destpath}"
         else
-            new_uri="${WALLPAPER_SYSTEM_DIR}/${base}"
+            new_uri="${destpath}"
         fi
-        
+
         local esc_uri esc_new
         esc_uri="$(printf '%s' "$uri" | sed -e 's/[.[\*^$#&]/\\&/g')"
         esc_new="$(printf '%s' "$new_uri" | sed -e 's/[#&\\]/\\&/g')"
         sed -i "s#${esc_uri}#${esc_new}#g" "$cfgfile"
-        echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
-        WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
     }
-    
+
     for cfgfile in "${WALLPAPER_CFG_FILES[@]}"; do
         [[ -f "$cfgfile" ]] || continue
         while IFS= read -r match; do
@@ -365,6 +395,64 @@ if [[ "$APPLY" == true ]]; then
     fi
 
     # =========================================================================
+    # SYSTEM-WIDE WALLPAPER DEFAULT
+    # =========================================================================
+    patch_system_wallpaper_default() {
+        local wallpaper_path="$1"
+        local xml_escaped="${wallpaper_path//&/&amp;}"
+        xml_escaped="${xml_escaped//</&lt;}"
+        xml_escaped="${xml_escaped//>/&gt;}"
+
+        local candidates=(
+            /usr/share/plasma/wallpapers/org.kde.image/contents/config/main.xml
+            /usr/share/plasma/wallpapers/org.kde.image/contents/config/Main.xml
+        )
+        local patched_any=false
+        local f
+        for f in "${candidates[@]}"; do
+            test -f "$f" || continue
+
+            local tmp_out="/tmp/main-xml-patch.$$"
+            if ! cat "$f" | awk -v newval="$xml_escaped" '
+                BEGIN { in_entry = 0 }
+                {
+                    line = $0
+                    if (line ~ /<entry[ \t]+name="Image"[ \t]+type="String"/) { in_entry = 1 }
+                    if (in_entry && match(line, /<default>.*<\/default>/)) {
+                        sub(/<default>.*<\/default>/, "<default>" newval "</default>", line)
+                        in_entry = 0
+                    }
+                    print line
+                }
+            ' > "$tmp_out"; then
+                log WARN "Could not parse $f -- leaving default wallpaper untouched there."
+                rm -f "$tmp_out"
+                continue
+            fi
+
+            if ! grep -qF "<default>${xml_escaped}</default>" "$tmp_out"; then
+                log WARN "Didn't find an Image default entry to patch in $f -- left untouched."
+                rm -f "$tmp_out"
+                continue
+            fi
+
+            test -f "${f}.pre-export-orig" || cp "$f" "${f}.pre-export-orig"
+            cp "$tmp_out" "$f"
+            rm -f "$tmp_out"
+            patched_any=true
+            log OK "Set system-wide default wallpaper in $f -> $wallpaper_path"
+        done
+
+        if ! $patched_any; then
+            log WARN "No org.kde.image main.xml found/patched -- new users will depend solely on copied appletsrc."
+        fi
+    }
+
+    if [[ -n "$PRIMARY_WALLPAPER_DESTPATH" ]]; then
+        patch_system_wallpaper_default "$PRIMARY_WALLPAPER_DESTPATH"
+    fi
+
+    # =========================================================================
     # CACHYOS BASH FIX
     # =========================================================================
     if [[ -f "$SKEL/.bashrc" ]]; then
@@ -373,6 +461,12 @@ if [[ "$APPLY" == true ]]; then
             echo -e "\n# Trigger fastfetch on interactive terminal launch (CachyOS fix)\nif [[ \$- == *i* ]]; then\n    if command -v fastfetch >/dev/null 2>&1; then\n        fastfetch\n    fi\nfi" >> "$SKEL/.bashrc"
         fi
     fi
+
+    while IFS= read -r symlink; do
+        if ! test -e "$symlink"; then
+            BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
+        fi
+    done < <(find "$SKEL" -type l 2>/dev/null)
 
     chown -Rh root:root "$SKEL"
     chmod -R go+rX "$SKEL"
@@ -425,6 +519,9 @@ if [[ "$APPLY" == true ]]; then
     echo "${C_BOLD}Summary${C_RESET}"
     echo "  Files copied      : $TOTAL_FILES"
     echo "  Total size        : $(human_size "$TOTAL_BYTES")"
+    if [[ "$BROKEN_SYMLINKS" -gt 0 ]]; then
+        echo "  Broken Symlinks   : $BROKEN_SYMLINKS"
+    fi
 fi
 
 # =============================================================================
@@ -439,19 +536,20 @@ if $REMASTER; then
         exit 1
     fi
 
-    # Auto-detect CachyOS kernel and create symlinks required by Penguins' Eggs
+    # Auto-detect CachyOS kernel and prepare required files for Eggs
     K_FILE="$(ls -1 /boot/vmlinuz-linux* 2>/dev/null | head -n1 || true)"
     if [[ -n "$K_FILE" ]]; then
         K_NAME="$(basename "$K_FILE")"
         INITRD_NAME="initramfs-${K_NAME#vmlinuz-}.img"
         
-        log INFO "Symlinking kernel ($K_NAME) for Eggs..."
-        ln -sf "/boot/$K_NAME" /boot/vmlinuz
+        log INFO "Configuring kernel ($K_NAME) for Eggs..."
+        # Try symlinking; fall back to copying if /boot is a FAT32 partition
+        ln -sf "/boot/$K_NAME" /boot/vmlinuz 2>/dev/null || cp -f "/boot/$K_NAME" /boot/vmlinuz
         
         if [[ -f "/boot/$INITRD_NAME" ]]; then
-            ln -sf "/boot/$INITRD_NAME" /boot/initrd.img
+            ln -sf "/boot/$INITRD_NAME" /boot/initrd.img 2>/dev/null || cp -f "/boot/$INITRD_NAME" /boot/initrd.img
         elif [[ -f "/boot/initramfs-linux.img" ]]; then
-            ln -sf /boot/initramfs-linux.img /boot/initrd.img
+            ln -sf /boot/initramfs-linux.img /boot/initrd.img 2>/dev/null || cp -f /boot/initramfs-linux.img /boot/initrd.img
         fi
     else
         log WARN "Could not find /boot/vmlinuz-linux*. Proceeding anyway..."
