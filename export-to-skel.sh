@@ -234,7 +234,17 @@ CONFIG_FILES=(
     .config/gtkrc-2.0
     .config/xsettingsd
     .gtkrc-2.0
+    # Cursor theme + size (Mouse/cursorTheme, Mouse/cursorSize) — written by
+    # the theming script via kwriteconfig6 but previously not exported here.
+    .config/kcminputrc
+    # Window rules that FORCE server-side decorations for Firefox/Chromium
+    # (see the theming script's kwinrulesrc python block). Without this,
+    # a new user gets the Aurorae decoration engine (from kwinrc) but not
+    # the per-app rule that makes browsers actually respect it.
+    .config/kwinrulesrc
 )
+
+
 
 # GTK config directories
 CONFIG_DIRS=(
@@ -244,6 +254,7 @@ CONFIG_DIRS=(
     .config/Kvantum
     .config/kvantum
     .config/fontconfig
+    .config/plasma-workspace/env
 )
 
 # Local data: themes, icons, cursors, fonts, color schemes
