@@ -68,10 +68,10 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
 
-  (none)            Install eggs + Calamares and set up CachyOSXDev branding
-  --remaster        Also produce the installable ISO via 'eggs remaster'
-  --clean           Tear down the eggs remaster workspace ('eggs destroy')
-  --help            Show this help
+  (none)         Install eggs + Calamares and set up CachyOSXDev branding
+  --remaster     Also produce the installable ISO via 'eggs remaster'
+  --clean        Tear down the eggs remaster workspace ('eggs destroy')
+  --help         Show this help
 
 This script must be run as root (sudo).
 EOF
@@ -117,11 +117,14 @@ install_eggs() {
 
     log "penguins-eggs not found — installing..."
 
-    # 1) Prefer an AUR helper (CachyOS ships one by default).
-    if command -v paru >/dev/null 2>&1; then
-        paru -S --noconfirm penguins-eggs || true
-    elif command -v yay >/dev/null 2>&1; then
-        yay -S --noconfirm penguins-eggs || true
+    # 1) Try AUR helper as original user (makepkg fails if executed as root)
+    local real_user="${SUDO_USER:-}"
+    if [ -n "$real_user" ] && [ "$real_user" != "root" ]; then
+        if command -v paru >/dev/null 2>&1; then
+            sudo -u "$real_user" paru -S --noconfirm penguins-eggs || true
+        elif command -v yay >/dev/null 2>&1; then
+            sudo -u "$real_user" yay -S --noconfirm penguins-eggs || true
+        fi
     fi
 
     if command -v eggs >/dev/null 2>&1; then
@@ -129,13 +132,10 @@ install_eggs() {
         return 0
     fi
 
-    # 2) Fallback: build from source.
-    warn "AUR install did not provide 'eggs'; building from source..."
-    pacman -S --needed --noconfirm base-devel git go gcc make
-    local tmp
-    tmp="$(mktemp -d)"
-    git clone --depth 1 https://github.com/pieroproietti/penguins-eggs.git "$tmp"
-    ( cd "$tmp" && make && make install )
+    # 2) Fallback: Install via npm (penguins-eggs is an npm package)
+    warn "AUR install unavailable; installing penguins-eggs via npm..."
+    pacman -S --needed --noconfirm nodejs npm
+    npm install -g penguins-eggs
 
     if command -v eggs >/dev/null 2>&1; then
         ok "penguins-eggs built and installed."
@@ -147,7 +147,6 @@ install_eggs() {
 }
 
 # --- Branding ----------------------------------------------------------------
-# Fetch the official CachyOS branding directory and echo its path on stdout.
 fetch_official_branding() {
     local src=""
     for p in "${OFFICIAL_BRANDING_PATHS[@]}"; do
@@ -184,9 +183,6 @@ fetch_official_branding() {
     echo "$src"
 }
 
-# Write a valid branding.desc faithful to the official CachyOS descriptor,
-# with only the product name/version rebranded. componentName is parametrized
-# because the standalone branding dir is named differently from eggs' overlay.
 write_branding_desc() {
     local component_name="$1"
     local dest_dir="$2"
@@ -194,13 +190,12 @@ write_branding_desc() {
 
     log "Writing branding.desc (componentName: $component_name)"
 
-    # Reference: CachyOS/cachyos-calamares src/branding/cachyos/branding.desc
     cat > "$desc_file" <<EOF
 ---
-componentName:  $component_name
+componentName:   $component_name
 
 welcomeStyleCalamares:   false
-welcomeExpandingLogo:   true
+welcomeExpandingLogo:    true
 
 windowExpanding:    normal
 windowSize: 1100px,520px
@@ -245,19 +240,16 @@ install_branding() {
     src="$(fetch_official_branding)"
     local standalone_dir="$CALAMARES_BRANDING_ROOT/$BRANDING_NAME"
 
-    # 1) Standalone Calamares branding (/etc/calamares/branding/<name>).
     log "Installing standalone branding -> $standalone_dir"
     mkdir -p "$standalone_dir"
     cp -a "$src"/. "$standalone_dir"/
     write_branding_desc "$BRANDING_NAME" "$standalone_dir"
 
-    # 2) eggs vendor overlay (baked into the ISO, used by 'eggs sysinstall').
     log "Installing eggs branding overlay -> $EGGS_OVERLAY_DIR"
     mkdir -p "$EGGS_OVERLAY_DIR"
     cp -a "$src"/. "$EGGS_OVERLAY_DIR"/
     write_branding_desc "eggs" "$EGGS_OVERLAY_DIR"
 
-    # 3) Permissions.
     find "$standalone_dir" -type d -exec chmod 755 {} +
     find "$standalone_dir" -type f -exec chmod 644 {} +
     chown -R root:root "$standalone_dir"
@@ -314,7 +306,7 @@ summary() {
     echo -e "  Settings backup     : $CALAMARES_SETTINGS_BACKUP"
     echo -e ""
     echo -e "${YELLOW}Next steps:${NC}"
-    echo -e "  1. Produce the ISO : sudo $0 --remaster   (or: sudo eggs remaster)"
+    echo -e "  1. Produce the ISO : sudo $0 --remaster    (or: sudo eggs remaster)"
     echo -e "  2. Tune compression: sudo eggs config"
     echo -e "  3. Test the ISO    : boot it, then 'sudo eggs sysinstall calamares'"
     echo -e "  4. Clean workspace : sudo $0 --clean"
