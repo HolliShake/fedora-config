@@ -579,6 +579,37 @@ EOF
         fi
     done
 
+    # Ensure grub package is installed
+    if ! pacman -Qs grub &>/dev/null; then
+        log INFO "Installing missing grub dependency..."
+        pacman -S --needed --noconfirm grub || true
+    fi
+
+    # Ensure penguins-eggs bootloader directory and monolithic grubx64.efi exist
+    EGGS_GRUB_DIR="/usr/lib/penguins-eggs/bootloaders/grub/x86_64-efi/monolithic"
+    EGGS_GRUB_EFI="${EGGS_GRUB_DIR}/grubx64.efi"
+
+    if [[ ! -f "$EGGS_GRUB_EFI" ]]; then
+        log INFO "Missing monolithic grubx64.efi for Eggs. Provisioning..."
+        mkdir -p "$EGGS_GRUB_DIR"
+
+        if command -v grub-mkstandalone &>/dev/null; then
+            grub-mkstandalone -O x86_64-efi -o "$EGGS_GRUB_EFI" || true
+        fi
+
+        # Fallback if grub-mkstandalone failed or did not create the file
+        if [[ ! -f "$EGGS_GRUB_EFI" ]]; then
+            log WARN "grub-mkstandalone did not produce output. Searching system for fallback grubx64.efi..."
+            EXISTING_EFI="$(find /boot /usr/share /usr/lib -type f \( -name "grubx64.efi" -o -name "BOOTX64.EFI" \) 2>/dev/null | head -n1 || true)"
+            if [[ -n "$EXISTING_EFI" && -f "$EXISTING_EFI" ]]; then
+                log INFO "Found fallback EFI binary at $EXISTING_EFI"
+                cp -f "$EXISTING_EFI" "$EGGS_GRUB_EFI"
+            else
+                log ERR "Unable to create or locate monolithic grubx64.efi for Penguins' Eggs."
+            fi
+        fi
+    fi
+
     KVER="$(uname -r)"
     log INFO "Detected running kernel version: $KVER"
 
