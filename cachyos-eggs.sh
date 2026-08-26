@@ -439,6 +439,24 @@ if $REMASTER; then
         exit 1
     fi
 
+    # Auto-detect CachyOS kernel and create symlinks required by Penguins' Eggs
+    K_FILE="$(ls -1 /boot/vmlinuz-linux* 2>/dev/null | head -n1 || true)"
+    if [[ -n "$K_FILE" ]]; then
+        K_NAME="$(basename "$K_FILE")"
+        INITRD_NAME="initramfs-${K_NAME#vmlinuz-}.img"
+        
+        log INFO "Symlinking kernel ($K_NAME) for Eggs..."
+        ln -sf "/boot/$K_NAME" /boot/vmlinuz
+        
+        if [[ -f "/boot/$INITRD_NAME" ]]; then
+            ln -sf "/boot/$INITRD_NAME" /boot/initrd.img
+        elif [[ -f "/boot/initramfs-linux.img" ]]; then
+            ln -sf /boot/initramfs-linux.img /boot/initrd.img
+        fi
+    else
+        log WARN "Could not find /boot/vmlinuz-linux*. Proceeding anyway..."
+    fi
+
     # Triggers the ISO creation
     eggs produce
 fi
