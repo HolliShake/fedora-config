@@ -32,9 +32,15 @@
 #     so you have an audit trail of exactly what landed in /etc/skel.
 #   - Upfront sudo validation with a keep-alive so the script doesn't die
 #     halfway through a long copy waiting on a password prompt.
-#   - Post-apply verification: flags any symlink in /etc/skel that still
-#     points back into $SRC_HOME (i.e. would break for a real new user),
-#     and a human-readable summary (file count + total size) at the end.
+#   - SELF-CONTAINED EXPORT: every copy fully dereferences symlinks (-L), so
+#     e.g. ~/.config/gtk-4.0/gtk-dark.css (normally a symlink into a theme
+#     package under /usr/share or $HOME) becomes a real file with the theme's
+#     actual CSS content. Built for baking into a distro image: a fresh
+#     install shouldn't need the original theme package installed at all for
+#     GTK4/libadwaita apps to pick up the look. Any symlink that couldn't be
+#     dereferenced (broken target) is reported after the copy.
+#   - Wallpaper Image= references (absolute paths with your username in them)
+#     are rewritten to a stable system path so they aren't $HOME-bound either.
 #
 # Notes:
 #   - Must be run as the user whose config you want to export (NOT as root),
@@ -86,6 +92,9 @@ LOG_FILE="${EXPORT_DIR}/export.log"
 SRC_HOME="${HOME}"
 SKEL="/etc/skel"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+# Where wallpaper image files get "rehomed" to so config referencing them
+# is no longer tied to $SRC_HOME's path or username.
+WALLPAPER_SYSTEM_DIR="${WALLPAPER_SYSTEM_DIR:-/usr/share/wallpapers/site-default}"
 
 if [[ "$EUID" -eq 0 ]]; then
     echo "Please run this script as your normal user (it will call sudo itself when needed)." >&2
@@ -185,9 +194,12 @@ check_theme_location() {
         esac
     done
     if $user_hit; then
-        echo "  $label: ${C_GREEN}found under \$HOME${C_RESET} — will be exported by this script."
+        echo "  $label: ${C_GREEN}found under \$HOME${C_RESET} — will be copied and dereferenced into skel."
     elif $sys_hit; then
-        echo "  $label: ${C_BLUE}found under /usr/share${C_RESET} (system-wide install) — already available to all users, nothing to export."
+        echo "  $label: ${C_YELLOW}found under /usr/share only${C_RESET} — the theme PACKAGE itself is not copied by"
+        echo "      this script (it lives outside \$HOME). Any symlink referencing it (e.g. in gtk-4.0)"
+        echo "      WILL be dereferenced into real file content, but for GTK3/Plasma theme-by-NAME lookups"
+        echo "      to work on a fresh install, make sure the '$label' package is also in your distro image."
     else
         echo "  $label: ${C_YELLOW}not found in either location${C_RESET} — check it's actually installed."
     fi
@@ -198,6 +210,16 @@ check_theme_location "Color scheme"       "$SRC_HOME"/.local/share/color-schemes
 check_theme_location "GTK theme"          "$SRC_HOME"/.themes/WhiteSur* /usr/share/themes/WhiteSur*
 check_theme_location "Icon theme"         "$SRC_HOME"/.local/share/icons/WhiteSur* "$SRC_HOME"/.icons/WhiteSur* /usr/share/icons/WhiteSur*
 check_theme_location "Kvantum theme"      "$SRC_HOME"/.config/Kvantum/WhiteSur* "$SRC_HOME"/.config/kvantum/WhiteSur* /usr/share/Kvantum/WhiteSur*
+echo
+
+echo "${C_DIM}Note: the wallpaper *image* is exported as a plain file, and any theme"
+echo "config that was a symlink (e.g. gtk-4.0/*.css) is now dereferenced into real"
+echo "file content, so \$SKEL is self-contained — no dependency on /usr/share or"
+echo "\$HOME existing on the target machine. The wallpaper's Image= reference"
+echo "(an absolute path with your username in it) is rewritten on --apply to"
+echo "point at $WALLPAPER_SYSTEM_DIR instead. Per-screen containment layout itself"
+echo "is not restructured — a very different monitor count on the target machine"
+echo "may still cause Plasma to fall back to its own default for that screen.${C_RESET}"
 echo
 
 # --- List of config paths (relative to $HOME) to export ---------------------
@@ -313,24 +335,39 @@ TOTAL_FILES=0
 TOTAL_BYTES=0
 
 # --- Helper: copy one item preserving relative path -------------------------
+# IMPORTANT: this fully DEREFERENCES symlinks (-L). For a distro build, skel
+# must be self-contained — a symlink to /usr/share/themes/X or to $HOME is a
+# dependency on something that may not exist on the target machine at all.
+# So every symlink encountered (wherever it points) is resolved to its real
+# file content at export time. GTK4/libadwaita apps in particular look for
+# literal files at ~/.config/gtk-4.0/{gtk.css,gtk-dark.css,...} — theme
+# installers normally just symlink those to the theme package; we want the
+# actual bytes there instead so nothing else needs to be installed.
 copy_item() {
     local rel="$1"
     local src="${SRC_HOME}/${rel}"
     local dest="${SKEL}/${rel}"
 
-    [[ -e "$src" ]] || return 0   # skip anything that doesn't exist
+    [[ -e "$src" ]] || return 0   # skip anything that doesn't exist (also skips broken top-level symlinks)
 
     echo "  + $rel"
     if [[ "$APPLY" == true ]]; then
         if [[ -d "$src" ]]; then
             # Directory: create target directory and copy contents explicitly
-            # using '/.' to prevent cp from creating nested directory trees
+            # using '/.' to prevent cp from creating nested directory trees.
+            # -L dereferences any symlinks found inside (e.g. gtk-4.0/gtk-dark.css
+            # -> real theme file), so the copy is self-contained.
             sudo mkdir -p "$dest"
-            sudo cp -a --no-preserve=ownership "$src"/. "$dest"/
+            if ! sudo cp -aL --no-preserve=ownership "$src"/. "$dest"/ 2>/tmp/copy-err.$$; then
+                log WARN "Some items under $rel could not be fully dereferenced (likely a broken symlink pointing at a missing theme file):"
+                sed 's/^/      /' /tmp/copy-err.$$ 2>/dev/null || true
+            fi
+            rm -f /tmp/copy-err.$$
         else
-            # File: create parent directory and copy file
+            # File (or top-level symlink to a file): create parent directory,
+            # dereference into real content.
             sudo mkdir -p "$(dirname "$dest")"
-            sudo cp -a --no-preserve=ownership "$src" "$dest"
+            sudo cp -aL --no-preserve=ownership "$src" "$dest"
         fi
 
         # Record every regular file under this item in the manifest
@@ -359,34 +396,57 @@ done
 
 echo
 BROKEN_SYMLINKS=0
+WALLPAPERS_REHOMED=0
 if [[ "$APPLY" == true ]]; then
 
-    # --- FIX FOR LIBADWAITA / GTK4 APPS (like CachyOS Hello) ---
-    # GTK4/Libadwaita themes often install by symlinking ~/.config/gtk-4.0/gtk.css
-    # to ~/.themes/... (an absolute path to the current user's home).
-    # When copied to /etc/skel, these absolute symlinks break for new users.
-    # We must resolve any symlink pointing to $SRC_HOME into actual physical files.
-    log INFO "Resolving absolute symlinks to prevent broken GTK4 themes for new users..."
-    sudo find "$SKEL" -type l | while read -r symlink; do
-        target=$(sudo readlink "$symlink")
-        if [[ "$target" == "$SRC_HOME"* ]]; then
-            echo "  -> Dereferencing: ${symlink#$SKEL/}"
-            sudo rm "$symlink"
-            sudo cp -rL "$target" "$symlink" 2>/dev/null || true
-        fi
+    # --- Rehome wallpaper Image= references out of $SRC_HOME -------------
+    # plasma-org.kde.plasma.desktop-appletsrc (and sometimes kdeglobals)
+    # stores the wallpaper as an absolute file:// path under the exporting
+    # user's home. Copied as-is, that path is meaningless (or wrong) for a
+    # new user. Move the actual image to a stable system location and
+    # rewrite the reference to point there instead.
+    log INFO "Rehoming wallpaper image references out of \$SRC_HOME..."
+    WALLPAPER_CFG_FILES=(
+        "$SKEL/.config/plasma-org.kde.plasma.desktop-appletsrc"
+        "$SKEL/.config/kdeglobals"
+    )
+    for cfgfile in "${WALLPAPER_CFG_FILES[@]}"; do
+        [[ -f "$cfgfile" ]] || continue
+        while IFS= read -r line; do
+            raw="${line#Image=}"
+            path="${raw#file://}"
+            [[ "$path" == "$SRC_HOME"* ]] || continue
+            [[ -f "$path" ]] || continue
+            base="$(basename "$path")"
+            sudo mkdir -p "$WALLPAPER_SYSTEM_DIR"
+            sudo cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
+            sudo sed -i "s#file://${path//\//\\/}#file://${WALLPAPER_SYSTEM_DIR}/${base}#g" "$cfgfile"
+            echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
+            WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
+        done < <(sudo grep -h '^Image=' "$cfgfile" 2>/dev/null)
     done
+    if [[ "$WALLPAPERS_REHOMED" -gt 0 ]]; then
+        sudo chmod -R go+rX "$WALLPAPER_SYSTEM_DIR"
+        log OK "Rehomed $WALLPAPERS_REHOMED wallpaper reference(s) to $WALLPAPER_SYSTEM_DIR."
+    else
+        log INFO "No \$HOME-bound wallpaper Image= references found to rehome."
+    fi
 
-    sudo chown -R root:root "$SKEL"
-    sudo chmod -R go+rX "$SKEL"
-
-    # Verification pass: make sure nothing still points back at the real user's home
+    # --- Verify the export is actually self-contained ---------------------
+    # After -L dereferencing above, nothing under $SKEL should still be a
+    # symlink. If something is, it means cp couldn't resolve it (a broken
+    # symlink whose target theme file/dir doesn't exist) — flag it loudly,
+    # since a distro image built from this skel would ship the same break
+    # to every new user.
+    log INFO "Verifying export is self-contained (no leftover symlinks)..."
     while IFS= read -r symlink; do
         tgt="$(sudo readlink "$symlink" || true)"
-        if [[ "$tgt" == "$SRC_HOME"* ]]; then
-            log WARN "Still points into \$HOME, will break for new users: ${symlink#$SKEL/} -> $tgt"
-            BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
-        fi
+        log WARN "Leftover symlink (not dereferenced — target likely missing): ${symlink#$SKEL/} -> $tgt"
+        BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
     done < <(sudo find "$SKEL" -type l 2>/dev/null)
+
+    sudo chown -Rh root:root "$SKEL"
+    sudo chmod -R go+rX "$SKEL"
 
     log OK "Done. /etc/skel updated — new users will inherit this KDE/GTK setup."
     log INFO "Existing users are unaffected; copy manually to their \$HOME if needed."
@@ -459,11 +519,12 @@ if [[ "$APPLY" == true ]]; then
     echo "  Files copied     : $TOTAL_FILES"
     echo "  Total size       : $(human_size "$TOTAL_BYTES")"
     echo "  Manifest         : $MANIFEST_FILE"
+    echo "  Wallpapers rehomed: $WALLPAPERS_REHOMED (to $WALLPAPER_SYSTEM_DIR)"
     [[ -n "$BACKUP_ARCHIVE" ]] && echo "  Backup           : $BACKUP_ARCHIVE"
     if [[ "$BROKEN_SYMLINKS" -gt 0 ]]; then
-        log WARN "$BROKEN_SYMLINKS symlink(s) under /etc/skel still point into \$HOME — check the warnings above."
+        log WARN "$BROKEN_SYMLINKS leftover symlink(s) under /etc/skel — skel is NOT fully self-contained. Check the warnings above."
     else
-        log OK "No symlinks under /etc/skel point back into \$HOME."
+        log OK "Skel is fully self-contained — no symlinks left under /etc/skel."
     fi
     echo "  Log              : $LOG_FILE"
 fi
