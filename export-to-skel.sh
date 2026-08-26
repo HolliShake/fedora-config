@@ -68,7 +68,11 @@ for arg in "$@"; do
         --backup=*)   ROLLBACK_ARCHIVE="${arg#--backup=}" ;;
         --backup)     : ;;  # value grabbed below if given as separate arg
         -h|--help)
-            grep '^#' "$0" | sed 's/^#//' | sed '1d'
+            # Only the header block (comments before the first blank line
+            # that follows them) — NOT every '#' comment in the file, which
+            # would also dump internal implementation notes from deep in
+            # the script and make the real usage text hard to find.
+            awk '/^#!/{next} /^#/{print substr($0,3); next} {exit}' "$0"
             exit 0
             ;;
     esac
