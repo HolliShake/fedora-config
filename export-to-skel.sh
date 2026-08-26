@@ -246,6 +246,11 @@ CONFIG_FILES=(
     # a new user gets the Aurorae decoration engine (from kwinrc) but not
     # the per-app rule that makes browsers actually respect it.
     .config/kwinrulesrc
+    # Konsole's default-profile pointer + general settings. Without this,
+    # the custom profile/colorscheme FILES under .local/share/konsole are
+    # copied but nothing tells Konsole to actually use them — a new user
+    # just gets Konsole's stock built-in default.
+    .config/konsolerc
 )
 
 
@@ -421,37 +426,59 @@ BROKEN_SYMLINKS=0
 WALLPAPERS_REHOMED=0
 if [[ "$APPLY" == true ]]; then
 
-    # --- Rehome wallpaper Image= references out of $SRC_HOME -------------
+    # --- Rehome wallpaper file:// references out of $SRC_HOME -------------
     # plasma-org.kde.plasma.desktop-appletsrc (and sometimes kdeglobals)
     # stores the wallpaper as an absolute file:// path under the exporting
     # user's home. Copied as-is, that path is meaningless (or wrong) for a
-    # new user. Move the actual image to a stable system location and
-    # rewrite the reference to point there instead.
-    log INFO "Rehoming wallpaper image references out of \$SRC_HOME..."
+    # new user. Move the actual image(s) to a stable system location and
+    # rewrite the reference(s) to point there instead.
+    #
+    # IMPORTANT: this does NOT only look for a line starting with "Image=".
+    # The default org.kde.image plugin uses that key, but org.kde.slideshow
+    # (multi-image slideshow wallpaper) uses "SlidePaths=" instead, often
+    # with several comma-separated paths on one line — anchoring to
+    # "^Image=" silently misses that case entirely, which is one likely
+    # reason a slideshow-configured wallpaper wasn't carried over. Instead,
+    # scan the whole file for any file://$SRC_HOME/... URI regardless of
+    # which key it's attached to, so any wallpaper plugin's own key name is
+    # caught the same way.
+    log INFO "Rehoming wallpaper file:// references out of \$SRC_HOME..."
     WALLPAPER_CFG_FILES=(
         "$SKEL/.config/plasma-org.kde.plasma.desktop-appletsrc"
         "$SKEL/.config/kdeglobals"
     )
+    rehome_wallpaper_uri() {
+        local uri="$1" cfgfile="$2"
+        local path="${uri#file://}"
+        [[ -f "$path" ]] || return 0
+        local base
+        base="$(basename "$path")"
+        sudo mkdir -p "$WALLPAPER_SYSTEM_DIR"
+        sudo cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
+        local new_uri="file://${WALLPAPER_SYSTEM_DIR}/${base}"
+        # Escape sed/regex metacharacters on both sides (filenames can
+        # contain '.', which is a regex wildcard) — '#' is our sed
+        # delimiter so a literal '/' needs no escaping, but '.', '*',
+        # '^', '$', '[', and a literal '#' or '&' all do.
+        local esc_uri esc_new
+        esc_uri="$(printf '%s' "$uri" | sed -e 's/[.[\*^$#&]/\\&/g')"
+        esc_new="$(printf '%s' "$new_uri" | sed -e 's/[#&\\]/\\&/g')"
+        sudo sed -i "s#${esc_uri}#${esc_new}#g" "$cfgfile"
+        echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
+        WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
+    }
     for cfgfile in "${WALLPAPER_CFG_FILES[@]}"; do
         [[ -f "$cfgfile" ]] || continue
-        while IFS= read -r line; do
-            raw="${line#Image=}"
-            path="${raw#file://}"
-            [[ "$path" == "$SRC_HOME"* ]] || continue
-            [[ -f "$path" ]] || continue
-            base="$(basename "$path")"
-            sudo mkdir -p "$WALLPAPER_SYSTEM_DIR"
-            sudo cp -n "$path" "$WALLPAPER_SYSTEM_DIR/$base" 2>/dev/null || true
-            sudo sed -i "s#file://${path//\//\\/}#file://${WALLPAPER_SYSTEM_DIR}/${base}#g" "$cfgfile"
-            echo "  -> Rehomed: $base -> $WALLPAPER_SYSTEM_DIR/$base"
-            WALLPAPERS_REHOMED=$((WALLPAPERS_REHOMED + 1))
-        done < <(sudo grep -h '^Image=' "$cfgfile" 2>/dev/null)
+        while IFS= read -r uri; do
+            [[ -n "$uri" ]] || continue
+            rehome_wallpaper_uri "$uri" "$cfgfile"
+        done < <(sudo grep -hoE "file://${SRC_HOME}[^,\"' 	]*" "$cfgfile" 2>/dev/null | sort -u)
     done
     if [[ "$WALLPAPERS_REHOMED" -gt 0 ]]; then
         sudo chmod -R go+rX "$WALLPAPER_SYSTEM_DIR"
         log OK "Rehomed $WALLPAPERS_REHOMED wallpaper reference(s) to $WALLPAPER_SYSTEM_DIR."
     else
-        log INFO "No \$HOME-bound wallpaper Image= references found to rehome."
+        log INFO "No \$HOME-bound wallpaper file:// references found to rehome."
     fi
 
     # --- Verify the export is actually self-contained ---------------------
