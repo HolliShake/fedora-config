@@ -527,168 +527,120 @@ fi
 # =============================================================================
 # PENGUINS' EGGS REMASTER
 # =============================================================================
+#
+# IMPORTANT: CachyOS is NOT an officially supported distro for Penguins'
+# Eggs. It works via a community workaround (documented in fresh-eggs'
+# SUPPORTED-DISTROS.md: https://github.com/pieroproietti/fresh-eggs/blob/main/SUPPORTED-DISTROS.md)
+# and it is known to be fragile across eggs/kernel updates. Treat this
+# block as "best effort", not a guaranteed-working pipeline. Recent eggs
+# changelogs (26.x) claim native CachyOS boot-issue fixes, so keeping eggs
+# itself up to date matters at least as much as anything below.
+#
 if $REMASTER; then
     echo
     log INFO "Beginning CachyOS remastering build with Penguins' Eggs..."
-    
+    log WARN "CachyOS support in Penguins' Eggs is community-maintained/experimental, not official upstream support."
+
     if ! command -v eggs &>/dev/null; then
         log ERR "The 'eggs' binary was not found. Please install penguins-eggs first."
         exit 1
     fi
 
-    # Fix BTRFS snapshot / liveroot removal locks
-    log INFO "Cleaning up liveroot build directories..."
-    btrfs subvolume delete /home/eggs/liveroot/.snapshots 2>/dev/null || true
-    chattr -R -i /home/eggs/liveroot 2>/dev/null || true
-    rm -rf /home/eggs/liveroot/.snapshots 2>/dev/null || true
+    EGGS_VERSION="$(eggs -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)"
+    [[ -n "$EGGS_VERSION" ]] && log INFO "Detected penguins-eggs version: $EGGS_VERSION"
 
-    # Fix missing GRUB theme configuration file
-    EGGS_THEME_DIR="/usr/lib/node_modules/penguins-eggs/addons/eggs/theme/livecd"
-    EGGS_THEME_CFG="${EGGS_THEME_DIR}/grub.theme.cfg"
-
-    if [[ ! -f "$EGGS_THEME_CFG" ]]; then
-        log INFO "Provisioning missing GRUB theme config file ($EGGS_THEME_CFG)..."
-        mkdir -p "$EGGS_THEME_DIR"
-        
-        EXISTING_THEME_CFG="$(find /usr -name "grub.theme.cfg" 2>/dev/null | head -n1 || true)"
-        if [[ -n "$EXISTING_THEME_CFG" && -f "$EXISTING_THEME_CFG" ]]; then
-            cp -f "$EXISTING_THEME_CFG" "$EGGS_THEME_CFG"
-        else
-            touch "$EGGS_THEME_CFG"
+    # =========================================================================
+    # KERNEL SANITY CHECK
+    # =========================================================================
+    # The most commonly reported cause of a remastered CachyOS ISO hanging
+    # at boot (flashing cursor after fsck) is having more than one CachyOS
+    # kernel installed at once (e.g. linux-cachyos + linux-cachyos-lts).
+    # See: https://github.com/pieroproietti/penguins-eggs/issues/745
+    mapfile -t INSTALLED_KERNELS < <(pacman -Qq 2>/dev/null | grep -E '^linux-cachyos(-[a-z]+)?$' || true)
+    if [[ "${#INSTALLED_KERNELS[@]}" -gt 1 ]]; then
+        log WARN "Multiple CachyOS kernels detected: ${INSTALLED_KERNELS[*]}"
+        log WARN "This is a known cause of unbootable remastered ISOs on CachyOS."
+        read -r -p "Continue anyway? [y/N] " kconfirm
+        if [[ "${kconfirm,,}" != "y" ]]; then
+            log ERR "Aborting. Remove the extra kernel(s) with pacman -R, reboot, then re-run --remaster."
+            exit 1
         fi
     fi
 
-    # Ensure archiso dependency is installed
+    # =========================================================================
+    # ENSURE EGGS PREREQUISITES/CONFIG EXIST
+    # =========================================================================
+    if [[ ! -d /etc/penguins-eggs.d ]]; then
+        log INFO "No eggs configuration found -- running 'eggs init' (prerequisites + config)..."
+        eggs init --nointeractive 2>/dev/null || eggs config 2>/dev/null || \
+            log WARN "'eggs init'/'eggs config' failed or is unavailable in this eggs version; continuing."
+    fi
+
+    # =========================================================================
+    # CACHYOS COMPATIBILITY SHIM
+    # (per fresh-eggs SUPPORTED-DISTROS.md — the ONLY documented fix)
+    # =========================================================================
+    if ! grep -q '^ID_LIKE=arch' /etc/os-release 2>/dev/null; then
+        log INFO "Adding ID_LIKE=arch to /etc/os-release so eggs treats CachyOS as Arch-based..."
+        cp -a /etc/os-release "/etc/os-release.pre-eggs-backup" 2>/dev/null || true
+        echo 'ID_LIKE=arch' >> /etc/os-release
+    fi
+
+    KVER="$(uname -r)"
+    RUNNING_INITRD="$(ls -1 /boot/initramfs-linux-cachyos*.img 2>/dev/null | grep -v fallback | head -n1 || true)"
+    TARGET_INITRD="/boot/initramfs-${KVER}.img"
+
+    if [[ -n "$RUNNING_INITRD" && -f "$RUNNING_INITRD" && ! -e "$TARGET_INITRD" ]]; then
+        log INFO "Linking initramfs so eggs can find it as initramfs-\$(uname -r).img..."
+        if ln -sf "$RUNNING_INITRD" "$TARGET_INITRD" 2>/dev/null; then
+            log OK "Symlinked $TARGET_INITRD -> $RUNNING_INITRD"
+        else
+            # /boot on FAT32 (common on some CachyOS/dual-boot setups) can't hold symlinks.
+            log WARN "Symlink failed (FAT32 /boot?) -- copying instead. Note: you'll need to redo this after every kernel update."
+            cp -f "$RUNNING_INITRD" "$TARGET_INITRD"
+        fi
+    fi
+
+    # =========================================================================
+    # ARCHISO DEPENDENCY
+    # =========================================================================
     if ! pacman -Qs archiso &>/dev/null; then
-        log INFO "Installing missing archiso dependency..."
+        log INFO "Installing missing archiso dependency (also provides the archiso_* mkinitcpio hooks)..."
         pacman -S --needed --noconfirm archiso || true
     fi
 
-    # Fix missing/deprecated archiso mkinitcpio hooks (archiso_pxe_http, etc.)
-    mkdir -p /usr/lib/initcpio/install /usr/lib/initcpio/hooks
-    ARCHISO_HOOKS=(
-        archiso
-        archiso_loop_mnt
-        archiso_pxe_common
-        archiso_pxe_nbd
-        archiso_pxe_http
-        archiso_pxe_nfs
-    )
-
-    for hook in "${ARCHISO_HOOKS[@]}"; do
-        if [[ ! -f "/usr/lib/initcpio/install/${hook}" ]]; then
-            log INFO "Creating missing mkinitcpio install hook: /usr/lib/initcpio/install/${hook}"
-            cat << 'EOF' > "/usr/lib/initcpio/install/${hook}"
-build() {
-    :
-}
-
-help() {
-    echo "Fallback stub hook for archiso compatibility."
-}
-EOF
-            chmod 755 "/usr/lib/initcpio/install/${hook}"
-        fi
-
-        if [[ ! -f "/usr/lib/initcpio/hooks/${hook}" ]]; then
-            log INFO "Creating missing mkinitcpio runtime hook: /usr/lib/initcpio/hooks/${hook}"
-            cat << 'EOF' > "/usr/lib/initcpio/hooks/${hook}"
-run_hook() {
-    :
-}
-EOF
-            chmod 755 "/usr/lib/initcpio/hooks/${hook}"
-        fi
-    done
-
-    # Ensure grub package is installed
     if ! pacman -Qs grub &>/dev/null; then
         log INFO "Installing missing grub dependency..."
         pacman -S --needed --noconfirm grub || true
     fi
 
-    # Ensure penguins-eggs bootloader directory and monolithic grubx64.efi exist
-    EGGS_GRUB_DIR="/usr/lib/penguins-eggs/bootloaders/grub/x86_64-efi/monolithic"
-    EGGS_GRUB_EFI="${EGGS_GRUB_DIR}/grubx64.efi"
-
-    if [[ ! -f "$EGGS_GRUB_EFI" ]]; then
-        log INFO "Missing monolithic grubx64.efi for Eggs. Provisioning..."
-        mkdir -p "$EGGS_GRUB_DIR"
-
-        if command -v grub-mkstandalone &>/dev/null; then
-            grub-mkstandalone -O x86_64-efi -o "$EGGS_GRUB_EFI" || true
-        fi
-
-        # Fallback if grub-mkstandalone failed or did not create the file
-        if [[ ! -f "$EGGS_GRUB_EFI" ]]; then
-            log WARN "grub-mkstandalone did not produce output. Searching system for fallback grubx64.efi..."
-            EXISTING_EFI="$(find /boot /usr/share /usr/lib -type f \( -name "grubx64.efi" -o -name "BOOTX64.EFI" \) 2>/dev/null | head -n1 || true)"
-            if [[ -n "$EXISTING_EFI" && -f "$EXISTING_EFI" ]]; then
-                log INFO "Found fallback EFI binary at $EXISTING_EFI"
-                cp -f "$EXISTING_EFI" "$EGGS_GRUB_EFI"
-            else
-                log ERR "Unable to create or locate monolithic grubx64.efi for Penguins' Eggs."
-            fi
-        fi
+    # =========================================================================
+    # CALAMARES
+    # =========================================================================
+    # Recent eggs releases (26.x) ship their own Calamares build/config; on
+    # CachyOS the distro-packaged Calamares has been reported to stall at
+    # the bootloader step during install. Prefer eggs' own repo if present.
+    if eggs help repo &>/dev/null; then
+        log INFO "Syncing Calamares from eggs' own repo (eggs repo --add)..."
+        eggs repo --add 2>/dev/null || log WARN "'eggs repo --add' failed or unsupported in this version; leaving existing Calamares as-is."
     fi
+    log WARN "If the produced ISO's Calamares installer stalls at the bootloader step, fall back to the built-in TUI installer: sudo eggs krill -u"
 
-    KVER="$(uname -r)"
-    log INFO "Detected running kernel version: $KVER"
+    # =========================================================================
+    # LIVEROOT / BTRFS CLEANUP
+    # =========================================================================
+    log INFO "Cleaning up liveroot build directories..."
+    btrfs subvolume delete /home/eggs/liveroot/.snapshots 2>/dev/null || true
+    chattr -R -i /home/eggs/liveroot 2>/dev/null || true
+    rm -rf /home/eggs/liveroot/.snapshots 2>/dev/null || true
 
-    # Identify active kernel binary in /boot
-    K_FILE=""
-    for candidate in "/boot/vmlinuz-linux-cachyos-lts" "/boot/vmlinuz-linux-cachyos" "/boot/vmlinuz-linux" $(ls -1 /boot/vmlinuz* 2>/dev/null); do
-        if [[ -f "$candidate" && "$candidate" != *".old"* && "$candidate" != *".bak"* ]]; then
-            K_FILE="$candidate"
-            break
-        fi
-    done
-
-    if [[ -n "$K_FILE" ]]; then
-        K_NAME="$(basename "$K_FILE")"
-        log INFO "Found kernel binary: $K_FILE"
-
-        # Determine matching initramfs
-        INITRD_FILE=""
-        INITRD_CANDIDATE="/boot/initramfs-${K_NAME#vmlinuz-}.img"
-        if [[ -f "$INITRD_CANDIDATE" ]]; then
-            INITRD_FILE="$INITRD_CANDIDATE"
-        else
-            INITRD_FILE="$(ls -1 /boot/initramfs*.img 2>/dev/null | head -n1 || true)"
-        fi
-
-        log INFO "Preparing kernel files across all path variants expected by Eggs..."
-
-        # Copy kernel binary to standard kernel paths expected by Eggs
-        cp -f "$K_FILE" "/boot/vmlinuz-${KVER}" 2>/dev/null || true
-        cp -f "$K_FILE" "/boot/vmlinuz-linux" 2>/dev/null || true
-        cp -f "$K_FILE" "/boot/vmlinuz" 2>/dev/null || true
-        cp -f "$K_FILE" "/boot/vmlinux-${KVER}" 2>/dev/null || true
-        cp -f "$K_FILE" "/boot/vmlinux" 2>/dev/null || true
-        cp -f "$K_FILE" "/vmlinuz" 2>/dev/null || true
-        cp -f "$K_FILE" "/vmlinux" 2>/dev/null || true
-
-        # Copy initramfs to standard initrd paths
-        if [[ -n "$INITRD_FILE" && -f "$INITRD_FILE" ]]; then
-            log INFO "Found initramfs image: $INITRD_FILE"
-            cp -f "$INITRD_FILE" "/boot/initramfs-${KVER}.img" 2>/dev/null || true
-            cp -f "$INITRD_FILE" "/boot/initramfs-linux.img" 2>/dev/null || true
-            cp -f "$INITRD_FILE" "/boot/initrd.img-${KVER}" 2>/dev/null || true
-            cp -f "$INITRD_FILE" "/boot/initrd.img" 2>/dev/null || true
-            cp -f "$INITRD_FILE" "/initrd.img" 2>/dev/null || true
-        fi
-
-        # Duplicate CachyOS mkinitcpio preset to linux.preset for Eggs search
-        PRESET_FILE="$(ls -1 /etc/mkinitcpio.d/*.preset 2>/dev/null | head -n1 || true)"
-        if [[ -n "$PRESET_FILE" && -f "$PRESET_FILE" ]]; then
-            log INFO "Duplicating mkinitcpio preset ($PRESET_FILE) to linux.preset..."
-            cp -f "$PRESET_FILE" "/etc/mkinitcpio.d/linux.preset" 2>/dev/null || true
-            cp -f "$PRESET_FILE" "/etc/mkinitcpio.d/linux-${KVER}.preset" 2>/dev/null || true
-        fi
-    else
-        log WARN "Could not identify kernel file in /boot. Proceeding anyway..."
-    fi
-
-    # Trigger ISO creation using fast compression to prevent hangs
-    eggs produce --comp zstd
+    # =========================================================================
+    # BUILD THE ISO
+    # =========================================================================
+    # There is no "--comp" flag in current eggs releases. Default
+    # (sudo eggs produce) already uses fast zstd compression; --pendrive
+    # gives a smaller/slower zstd build, --max gives the smallest/slowest
+    # xz build. Use --nointeractive so this can run unattended.
+    log INFO "Running: eggs produce --nointeractive"
+    eggs produce --nointeractive
 fi
