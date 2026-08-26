@@ -352,6 +352,13 @@ copy_item() {
 
     echo "  + $rel"
     if [[ "$APPLY" == true ]]; then
+        # Wipe the destination first. Otherwise a stale symlink (or any other
+        # leftover) from a PREVIOUS run sits there untouched if the source no
+        # longer has a matching item to overwrite it with — silently leaving
+        # old, possibly-broken content behind. The timestamped backup taken
+        # earlier in this script covers this for rollback purposes.
+        sudo rm -rf "$dest"
+
         if [[ -d "$src" ]]; then
             # Directory: create target directory and copy contents explicitly
             # using '/.' to prevent cp from creating nested directory trees.
@@ -441,7 +448,7 @@ if [[ "$APPLY" == true ]]; then
     log INFO "Verifying export is self-contained (no leftover symlinks)..."
     while IFS= read -r symlink; do
         tgt="$(sudo readlink "$symlink" || true)"
-        log WARN "Leftover symlink (not dereferenced — target likely missing): ${symlink#$SKEL/} -> $tgt"
+        log WARN "Leftover symlink (destination is wiped before copy, so this means the source symlink's target could not be read on this run): ${symlink#$SKEL/} -> $tgt"
         BROKEN_SYMLINKS=$((BROKEN_SYMLINKS + 1))
     done < <(sudo find "$SKEL" -type l 2>/dev/null)
 
