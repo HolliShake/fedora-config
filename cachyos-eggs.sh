@@ -536,32 +536,63 @@ if $REMASTER; then
         exit 1
     fi
 
-    # Auto-detect CachyOS kernel and prepare required files for Eggs
-    K_FILE="$(ls -1 /boot/vmlinuz-linux* 2>/dev/null | head -n1 || true)"
+    KVER="$(uname -r)"
+    log INFO "Detected running kernel version: $KVER"
+
+    # Identify active kernel binary in /boot
+    K_FILE=""
+    for candidate in "/boot/vmlinuz-linux-cachyos-lts" "/boot/vmlinuz-linux-cachyos" "/boot/vmlinuz-linux" $(ls -1 /boot/vmlinuz* 2>/dev/null); do
+        if [[ -f "$candidate" && "$candidate" != *".old"* && "$candidate" != *".bak"* ]]; then
+            K_FILE="$candidate"
+            break
+        fi
+    done
+
     if [[ -n "$K_FILE" ]]; then
         K_NAME="$(basename "$K_FILE")"
-        INITRD_NAME="initramfs-${K_NAME#vmlinuz-}.img"
-        
-        log INFO "Preparing kernel ($K_NAME) and initramfs across all target paths..."
-        
-        # Copy kernel to all default paths searched by Eggs across distributions
-        cp -f "/boot/$K_NAME" /boot/vmlinuz-linux 2>/dev/null || true
-        cp -f "/boot/$K_NAME" /boot/vmlinuz 2>/dev/null || true
-        cp -f "/boot/$K_NAME" /vmlinuz 2>/dev/null || true
-        
-        # Copy corresponding initramfs/initrd
-        if [[ -f "/boot/$INITRD_NAME" ]]; then
-            cp -f "/boot/$INITRD_NAME" /boot/initramfs-linux.img 2>/dev/null || true
-            cp -f "/boot/$INITRD_NAME" /boot/initrd.img 2>/dev/null || true
-            cp -f "/boot/$INITRD_NAME" /initrd.img 2>/dev/null || true
-        elif [[ -f "/boot/initramfs-linux.img" ]]; then
-            cp -f /boot/initramfs-linux.img /boot/initrd.img 2>/dev/null || true
-            cp -f /boot/initramfs-linux.img /initrd.img 2>/dev/null || true
+        log INFO "Found kernel binary: $K_FILE"
+
+        # Determine matching initramfs
+        INITRD_FILE=""
+        INITRD_CANDIDATE="/boot/initramfs-${K_NAME#vmlinuz-}.img"
+        if [[ -f "$INITRD_CANDIDATE" ]]; then
+            INITRD_FILE="$INITRD_CANDIDATE"
+        else
+            INITRD_FILE="$(ls -1 /boot/initramfs*.img 2>/dev/null | head -n1 || true)"
+        fi
+
+        log INFO "Preparing kernel files across all path variants expected by Eggs..."
+
+        # Copy kernel binary to all standard kernel path patterns expected by Eggs
+        cp -f "$K_FILE" "/boot/vmlinuz-${KVER}" 2>/dev/null || true
+        cp -f "$K_FILE" "/boot/vmlinuz-linux" 2>/dev/null || true
+        cp -f "$K_FILE" "/boot/vmlinuz" 2>/dev/null || true
+        cp -f "$K_FILE" "/boot/vmlinux-${KVER}" 2>/dev/null || true
+        cp -f "$K_FILE" "/boot/vmlinux" 2>/dev/null || true
+        cp -f "$K_FILE" "/vmlinuz" 2>/dev/null || true
+        cp -f "$K_FILE" "/vmlinux" 2>/dev/null || true
+
+        # Copy initramfs to all standard initrd path patterns
+        if [[ -n "$INITRD_FILE" && -f "$INITRD_FILE" ]]; then
+            log INFO "Found initramfs image: $INITRD_FILE"
+            cp -f "$INITRD_FILE" "/boot/initramfs-${KVER}.img" 2>/dev/null || true
+            cp -f "$INITRD_FILE" "/boot/initramfs-linux.img" 2>/dev/null || true
+            cp -f "$INITRD_FILE" "/boot/initrd.img-${KVER}" 2>/dev/null || true
+            cp -f "$INITRD_FILE" "/boot/initrd.img" 2>/dev/null || true
+            cp -f "$INITRD_FILE" "/initrd.img" 2>/dev/null || true
+        fi
+
+        # Duplicate CachyOS mkinitcpio preset to linux.preset for Eggs search
+        PRESET_FILE="$(ls -1 /etc/mkinitcpio.d/*.preset 2>/dev/null | head -n1 || true)"
+        if [[ -n "$PRESET_FILE" && -f "$PRESET_FILE" ]]; then
+            log INFO "Duplicating mkinitcpio preset ($PRESET_FILE) to linux.preset..."
+            cp -f "$PRESET_FILE" "/etc/mkinitcpio.d/linux.preset" 2>/dev/null || true
+            cp -f "$PRESET_FILE" "/etc/mkinitcpio.d/linux-${KVER}.preset" 2>/dev/null || true
         fi
     else
-        log WARN "Could not find /boot/vmlinuz-linux*. Proceeding anyway..."
+        log WARN "Could not identify kernel file in /boot. Proceeding anyway..."
     fi
 
-    # Triggers the ISO creation
+    # Trigger ISO creation
     eggs produce
 fi
