@@ -536,6 +536,28 @@ if $REMASTER; then
         exit 1
     fi
 
+    # Fix BTRFS snapshot / liveroot removal locks
+    log INFO "Cleaning up liveroot build directories..."
+    btrfs subvolume delete /home/eggs/liveroot/.snapshots 2>/dev/null || true
+    chattr -R -i /home/eggs/liveroot 2>/dev/null || true
+    rm -rf /home/eggs/liveroot/.snapshots 2>/dev/null || true
+
+    # Fix missing GRUB theme configuration file
+    EGGS_THEME_DIR="/usr/lib/node_modules/penguins-eggs/addons/eggs/theme/livecd"
+    EGGS_THEME_CFG="${EGGS_THEME_DIR}/grub.theme.cfg"
+
+    if [[ ! -f "$EGGS_THEME_CFG" ]]; then
+        log INFO "Provisioning missing GRUB theme config file ($EGGS_THEME_CFG)..."
+        mkdir -p "$EGGS_THEME_DIR"
+        
+        EXISTING_THEME_CFG="$(find /usr -name "grub.theme.cfg" 2>/dev/null | head -n1 || true)"
+        if [[ -n "$EXISTING_THEME_CFG" && -f "$EXISTING_THEME_CFG" ]]; then
+            cp -f "$EXISTING_THEME_CFG" "$EGGS_THEME_CFG"
+        else
+            touch "$EGGS_THEME_CFG"
+        fi
+    fi
+
     # Ensure archiso dependency is installed
     if ! pacman -Qs archiso &>/dev/null; then
         log INFO "Installing missing archiso dependency..."
@@ -667,6 +689,6 @@ EOF
         log WARN "Could not identify kernel file in /boot. Proceeding anyway..."
     fi
 
-    # Trigger ISO creation
-    eggs produce
+    # Trigger ISO creation using fast compression to prevent hangs
+    eggs produce --comp zstd
 fi
