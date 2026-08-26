@@ -615,6 +615,37 @@ if $REMASTER; then
     fi
 
     # =========================================================================
+    # MISSING GRUB LIVECD THEME CONFIG
+    # =========================================================================
+    # Confirmed live bug: some eggs installs (npm/AUR packaging) ship without
+    # addons/eggs/theme/livecd/grub.theme.cfg, and the build aborts with
+    # "error: .../grub.theme.cfg does not exist" while assembling the ISO's
+    # GRUB config. eggs only needs the file to be present, not any specific
+    # content, so provision a usable one if it's missing.
+    EGGS_THEME_DIR="/usr/lib/node_modules/penguins-eggs/addons/eggs/theme/livecd"
+    EGGS_THEME_CFG="${EGGS_THEME_DIR}/grub.theme.cfg"
+
+    if [[ ! -f "$EGGS_THEME_CFG" ]]; then
+        log INFO "Provisioning missing GRUB theme config file ($EGGS_THEME_CFG)..."
+        mkdir -p "$EGGS_THEME_DIR"
+
+        EXISTING_THEME_CFG="$(find /usr -path '*/theme/livecd/grub.theme.cfg' 2>/dev/null | head -n1 || true)"
+        if [[ -n "$EXISTING_THEME_CFG" && -f "$EXISTING_THEME_CFG" ]]; then
+            cp -f "$EXISTING_THEME_CFG" "$EGGS_THEME_CFG"
+            log OK "Copied existing grub.theme.cfg from $EXISTING_THEME_CFG"
+        else
+            # Minimal, valid GRUB config fragment -- enough for eggs' seeker
+            # to find a non-empty file rather than aborting the build.
+            cat > "$EGGS_THEME_CFG" <<'EOF'
+# Auto-provisioned fallback theme config (upstream file was missing).
+# Minimal, safe GRUB snippet -- no custom theme/background applied.
+set timeout=5
+EOF
+            log WARN "No existing grub.theme.cfg found on system -- wrote a minimal fallback. GRUB will boot plain (no custom theme/background)."
+        fi
+    fi
+
+    # =========================================================================
     # CALAMARES
     # =========================================================================
     # Recent eggs releases (26.x) ship their own Calamares build/config; on
@@ -629,10 +660,34 @@ if $REMASTER; then
     # =========================================================================
     # LIVEROOT / BTRFS CLEANUP
     # =========================================================================
-    log INFO "Cleaning up liveroot build directories..."
-    btrfs subvolume delete /home/eggs/liveroot/.snapshots 2>/dev/null || true
-    chattr -R -i /home/eggs/liveroot 2>/dev/null || true
-    rm -rf /home/eggs/liveroot/.snapshots 2>/dev/null || true
+    # On a btrfs+snapper system, anything eggs creates under
+    # /home/eggs/liveroot/.snapshots during the build is itself a nested
+    # btrfs *subvolume*, not a plain directory. eggs' own internal cleanup
+    # step runs a plain `rm -rf` against it, which can never remove a
+    # subvolume ("rm -rf ... code: 1"), aborting the build. Recursively
+    # find and delete every nested subvolume under the liveroot path
+    # (deepest first) before eggs ever touches it.
+    purge_nested_subvolumes() {
+        local root="$1"
+        [[ -d "$root" ]] || return 0
+        if command -v btrfs &>/dev/null && findmnt -T "$root" -no FSTYPE 2>/dev/null | grep -q btrfs; then
+            # List subvolumes whose path is under $root, deepest first.
+            while IFS= read -r line; do
+                local path
+                path="$(awk '{print $NF}' <<<"$line")"
+                [[ -n "$path" ]] || continue
+                local abs="/${path}"
+                [[ "$abs" == "$root"* ]] || continue
+                btrfs subvolume delete "$abs" 2>/dev/null || true
+            done < <(btrfs subvolume list -o "$root" 2>/dev/null | sort -r)
+        fi
+        chattr -R -i "$root" 2>/dev/null || true
+        rm -rf "$root" 2>/dev/null || true
+    }
+
+    log INFO "Cleaning up liveroot build directories (including nested btrfs subvolumes)..."
+    purge_nested_subvolumes "/home/eggs/liveroot/.snapshots"
+    purge_nested_subvolumes "/home/eggs/liveroot"
 
     # =========================================================================
     # BUILD THE ISO
@@ -642,5 +697,10 @@ if $REMASTER; then
     # gives a smaller/slower zstd build, --max gives the smallest/slowest
     # xz build. Use --nointeractive so this can run unattended.
     log INFO "Running: eggs produce --nointeractive"
-    eggs produce --nointeractive
+    if ! eggs produce --nointeractive; then
+        log WARN "eggs produce failed -- re-purging liveroot (including any subvolumes it created mid-build) and retrying once..."
+        purge_nested_subvolumes "/home/eggs/liveroot/.snapshots"
+        purge_nested_subvolumes "/home/eggs/liveroot"
+        eggs produce --nointeractive
+    fi
 fi
